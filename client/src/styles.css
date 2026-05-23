@@ -176,6 +176,29 @@ select {
   gap: 14px;
 }
 
+/* ---- mode toggle ---- */
+.mode-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 0.45rem;
+}
+
+.mode-btn {
+  padding: 0.65rem 0.8rem;
+  border-radius: 12px;
+  font-size: 0.9rem;
+  background: rgba(255, 255, 255, 0.6);
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+
+.mode-btn.is-active {
+  background: linear-gradient(120deg, var(--accent-2), #1d4a5a);
+  color: #fff;
+  border-color: transparent;
+}
+
 .join-form {
   margin-top: 18px;
   padding-top: 18px;

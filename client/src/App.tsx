@@ -15,6 +15,7 @@ import {
   MAX_ROOM_PLAYERS,
   MIN_ROOM_PLAYERS,
   Room,
+  RoomMode,
   Scenario,
   getCurrentTurnPlayer,
   getTurnPhaseLabel
@@ -34,6 +35,7 @@ function App() {
   const [joinName, setJoinName] = useState("桑耳");
   const [roomCode, setRoomCode] = useState("");
   const [selectedScenario, setSelectedScenario] = useState("midnight-train");
+  const [gameMode, setGameMode] = useState<RoomMode>("multi");
   const [maxPlayers, setMaxPlayers] = useState(3);
   const [action, setAction] = useState("");
   const [error, setError] = useState("");
@@ -301,7 +303,8 @@ function App() {
       const session = await createRoom({
         hostName,
         scenarioId: selectedScenario as Scenario["id"],
-        maxPlayers
+        mode: gameMode,
+        maxPlayers: gameMode === "single" ? 1 : maxPlayers
       });
       setRoom(session.room);
       setPlayerId(session.playerId);
@@ -313,6 +316,21 @@ function App() {
         playerId: session.playerId,
         playerName: hostName.trim()
       });
+
+      // auto-start for single player
+      if (gameMode === "single") {
+        try {
+          setStarting(true);
+          const nextRoom = await startRoom(session.room.id);
+          const activeId = resolvePlayerId(nextRoom, session.playerId, hostName.trim());
+          if (activeId) {
+            setPlayerId(activeId);
+          }
+          setRoom({ ...nextRoom });
+        } finally {
+          setStarting(false);
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建失败");
     } finally {
@@ -475,6 +493,26 @@ function App() {
               </label>
 
               <label>
+                游戏模式
+                <div className="mode-toggle">
+                  <button
+                    type="button"
+                    className={`mode-btn ${gameMode === "single" ? "is-active" : ""}`}
+                    onClick={() => setGameMode("single")}
+                  >
+                    单人冒险
+                  </button>
+                  <button
+                    type="button"
+                    className={`mode-btn ${gameMode === "multi" ? "is-active" : ""}`}
+                    onClick={() => setGameMode("multi")}
+                  >
+                    多人房间
+                  </button>
+                </div>
+              </label>
+
+              <label>
                 剧本模式
                 <select
                   value={selectedScenario}
@@ -491,25 +529,27 @@ function App() {
                 </select>
               </label>
 
-              <label>
-                房间人数（含 AI 补位）
-                <select
-                  value={maxPlayers}
-                  onChange={(event) => setMaxPlayers(Number(event.target.value))}
-                >
-                  {Array.from({ length: MAX_ROOM_PLAYERS - MIN_ROOM_PLAYERS + 1 }, (_, index) => {
-                    const value = index + MIN_ROOM_PLAYERS;
-                    return (
-                      <option key={value} value={value}>
-                        {value} 人局
-                      </option>
-                    );
-                  })}
-                </select>
-              </label>
+              {gameMode === "multi" && (
+                <label>
+                  房间人数（含 AI 补位）
+                  <select
+                    value={maxPlayers}
+                    onChange={(event) => setMaxPlayers(Number(event.target.value))}
+                  >
+                    {Array.from({ length: MAX_ROOM_PLAYERS - MIN_ROOM_PLAYERS + 1 }, (_, index) => {
+                      const value = index + MIN_ROOM_PLAYERS;
+                      return (
+                        <option key={value} value={value}>
+                          {value} 人局
+                        </option>
+                      );
+                    })}
+                  </select>
+                </label>
+              )}
 
               <button type="submit" disabled={loading}>
-                创建房间
+                {gameMode === "single" ? "开始冒险" : "创建房间"}
               </button>
             </form>
           )}
