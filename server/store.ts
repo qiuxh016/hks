@@ -4,6 +4,7 @@ import {
   Player,
   RoleCard,
   Room,
+  RoomMode,
   ScenarioId,
   WorldState
 } from "../shared/types";
@@ -41,26 +42,31 @@ export function getRoom(roomId: string) {
   return rooms.get(roomId);
 }
 
-export function createRoom(hostName: string, scenarioId: ScenarioId) {
+export function createRoom(hostName: string, scenarioId: ScenarioId, mode: RoomMode) {
   const roomId = createId("room");
   const hostPlayerId = createId("player");
   const host: Player = {
     id: hostPlayerId,
     name: hostName,
-    isHost: true
+    isHost: true,
+    ready: true
   };
 
+  const title = mode === "single" ? "单人" : "多人";
   const room: Room = {
     id: roomId,
     scenarioId,
     status: "lobby",
+    mode,
     hostPlayerId,
     players: [host],
     messages: [
       createMessage({
         type: "system",
         speaker: "系统",
-        content: `${hostName} 创建了房间，等待更多玩家加入。`
+        content: mode === "single"
+          ? `${hostName} 开启了单人冒险。`
+          : `${hostName} 创建了房间，等待更多玩家加入。`
       })
     ],
     worldState: createWorldState(),
@@ -78,6 +84,10 @@ export function joinRoom(roomId: string, playerName: string) {
     throw new Error("房间不存在");
   }
 
+  if (room.mode === "single") {
+    throw new Error("单人房间不支持加入");
+  }
+
   if (room.status !== "lobby") {
     throw new Error("游戏已经开始，暂时不能加入");
   }
@@ -86,7 +96,8 @@ export function joinRoom(roomId: string, playerName: string) {
   const player: Player = {
     id: playerId,
     name: playerName,
-    isHost: false
+    isHost: false,
+    ready: false
   };
 
   room.players.push(player);
@@ -123,6 +134,37 @@ export function assignRoleCards(roomId: string, roleCards: RoleCard[]) {
     ...player,
     roleCard: roleCards[index]
   }));
+
+  return room;
+}
+
+export function toggleReady(roomId: string, playerId: string) {
+  const room = rooms.get(roomId);
+
+  if (!room) {
+    throw new Error("房间不存在");
+  }
+
+  if (room.status !== "lobby") {
+    throw new Error("游戏已经开始");
+  }
+
+  const player = room.players.find((p) => p.id === playerId);
+  if (!player) {
+    throw new Error("玩家不存在");
+  }
+
+  player.ready = !player.ready;
+
+  room.messages.push(
+    createMessage({
+      type: "system",
+      speaker: "系统",
+      content: player.ready
+        ? `${player.name} 已准备。`
+        : `${player.name} 取消了准备。`
+    })
+  );
 
   return room;
 }

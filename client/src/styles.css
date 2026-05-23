@@ -123,10 +123,72 @@ select {
   gap: 14px;
 }
 
+/* ---- mode toggle ---- */
+.mode-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 0.45rem;
+}
+
+.mode-btn {
+  padding: 0.65rem 0.8rem;
+  border-radius: 12px;
+  font-size: 0.9rem;
+  background: rgba(255, 255, 255, 0.6);
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+
+.mode-btn.is-active {
+  background: linear-gradient(120deg, var(--accent-2), #1d4a5a);
+  color: #fff;
+  border-color: transparent;
+}
+
 .join-form {
   margin-top: 18px;
   padding-top: 18px;
   border-top: 1px solid var(--line);
+}
+
+/* ---- ready check ---- */
+.ready-list {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.ready-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  font-size: 0.93rem;
+}
+
+.ready-row.is-ready {
+  background: rgba(38, 70, 83, 0.08);
+}
+
+.ready-dot {
+  font-size: 1.1rem;
+  width: 20px;
+  text-align: center;
+}
+
+.is-ready .ready-dot {
+  color: #2a7d4f;
+}
+
+.ready-tag {
+  font-size: 0.7rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent-2);
+  color: #fff;
+  margin-left: auto;
 }
 
 .status-card,
@@ -219,6 +281,62 @@ select {
 
 .player-name {
   font-weight: 700;
+}
+
+/* ---- invite ---- */
+.invite-section {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.btn-invite {
+  width: 100%;
+  background: linear-gradient(120deg, var(--accent-2), #1d4a5a);
+}
+
+.qr-wrap {
+  margin-top: 12px;
+  padding: 16px;
+  border-radius: 16px;
+  background: #fff;
+  display: grid;
+  place-items: center;
+}
+
+/* ---- voting ---- */
+.vote-panel,
+.vote-result-panel {
+  margin-top: 18px;
+  padding: 16px;
+  border-radius: 20px;
+  border: 2px solid var(--gold);
+  background: rgba(193, 140, 58, 0.08);
+}
+
+.vote-question {
+  font-weight: 700;
+  font-size: 1.05rem;
+  margin-bottom: 12px;
+}
+
+.vote-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 150ms ease;
+}
+
+.vote-option:hover {
+  background: rgba(193, 140, 58, 0.12);
+}
+
+.vote-option input[type="radio"] {
+  width: auto;
+  margin: 0;
 }
 
 @media (max-width: 1080px) {
