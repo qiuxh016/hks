@@ -440,7 +440,9 @@ export async function resolveTurn(room: Room, player: Player, content: string) {
     const result = await resolveTurnWithAI(room, player, content);
     return {
       narration: result.narration,
-      nextLocation: defaultLocation
+      nextLocation: defaultLocation,
+      newClue: "",
+      interactiveObjects: room.worldState.interactiveObjects
     };
   } catch {
     // fallback to mock DM

@@ -2,6 +2,7 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "react-qr-code";
 import { createRoom, fetchScenarios, joinRoom, startRoom, submitTurn, toggleReady as apiToggleReady } from "./api";
 import { ChatMessage, useSocket, VoteState } from "./useSocket";
+import SceneRenderer from "./SceneRenderer";
 import VoiceChat from "./VoiceChat";
 import VoiceInput from "./VoiceInput";
 import { Room, RoomMode, Scenario } from "../../shared/types";
@@ -24,6 +25,8 @@ function App() {
   const [fromInvite, setFromInvite] = useState(false);
   const voiceBaseRef = useRef("");
   const messageListRef = useRef<HTMLDivElement>(null);
+  const [selectedObjectId, setSelectedObjectId] = useState("");
+  const [focusedSceneObjectId, setFocusedSceneObjectId] = useState("");
 
   // auto-scroll to latest message
   useEffect(() => {
@@ -51,6 +54,21 @@ function App() {
       chatListRef.current.scrollTop = chatListRef.current.scrollHeight;
     }
   }, [chatMessages.length, activeTab]);
+
+  // auto-select first interactive object when they change
+  useEffect(() => {
+    const objects = room?.worldState.interactiveObjects;
+    if (!objects?.length) return;
+    const hasSelected = objects.some((item) => item.id === selectedObjectId);
+    if (!hasSelected) {
+      setSelectedObjectId(objects[0].id);
+    }
+  }, [room?.worldState.interactiveObjects, selectedObjectId]);
+
+  // clear focus view on scenario change
+  useEffect(() => {
+    setFocusedSceneObjectId("");
+  }, [room?.scenarioId]);
 
   const onRoomState = useCallback((next: Room) => {
     setRoom(next);
@@ -220,15 +238,14 @@ function App() {
     }
   }
 
-  async function handleSubmitTurn(event: FormEvent) {
-    event.preventDefault();
-    if (!room || !playerId || !action.trim()) return;
+  async function runAction(nextAction: string) {
+    if (!room || !playerId || !nextAction.trim()) return;
 
     try {
       setLoading(true);
       const nextRoom = await submitTurn(room.id, {
         playerId,
-        content: action.trim()
+        content: nextAction.trim()
       });
       setRoom({ ...nextRoom });
       setAction("");
@@ -237,6 +254,11 @@ function App() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleSubmitTurn(event: FormEvent) {
+    event.preventDefault();
+    await runAction(action);
   }
 
   function handleChatSubmit(event: FormEvent) {
@@ -497,6 +519,19 @@ function App() {
 
           {activeTab === "story" && (
             <>
+              {room?.status === "in_progress" && (
+                <SceneRenderer
+                  room={room}
+                  selectedObjectId={selectedObjectId}
+                  focusedSceneObjectId={focusedSceneObjectId}
+                  onSelectObject={setSelectedObjectId}
+                  onFocusObject={setFocusedSceneObjectId}
+                  onClearFocus={() => setFocusedSceneObjectId("")}
+                  onRunAction={runAction}
+                  loading={loading}
+                />
+              )}
+
               <div className="message-list" ref={messageListRef}>
                 {room?.messages.map((message) => (
                   <article key={message.id} className={`message message-${message.type}`}>
@@ -534,10 +569,10 @@ function App() {
                   }}
                   onInterim={(text) => {
                     setAction((prev) => {
-                      const base = voiceBaseRef.current ?? "";
+                      if (!voiceBaseRef.current) voiceBaseRef.current = prev;
+                      const base = voiceBaseRef.current;
                       return base ? `${base} ${text}` : text;
                     });
-                    voiceBaseRef.current = voiceBaseRef.current || prev;
                   }}
                   disabled={room?.status !== "in_progress"}
                 />
@@ -595,6 +630,15 @@ function App() {
 
         <aside className="panel roster-panel">
           <h2>玩家与身份</h2>
+
+          {room?.worldState.clues && room.worldState.clues.length > 0 && (
+            <div className="clue-card">
+              <p className="eyebrow">Clues</p>
+              {room.worldState.clues.map((clue) => (
+                <p key={clue}>{clue}</p>
+              ))}
+            </div>
+          )}
 
           {room?.players.map((player) => (
             <article key={player.id} className={`player-card ${player.id === playerId ? "is-me" : ""}`}>
