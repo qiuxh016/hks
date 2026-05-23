@@ -2,10 +2,10 @@ import {
   CreateRoomRequest,
   JoinRoomRequest,
   Room,
-  RoomMode,
   RoomSessionResponse,
   Scenario,
-  TurnRequest
+  TurnRequest,
+  UpdateRoomSettingsRequest
 } from "../../shared/types";
 
 async function request<T>(input: string, init?: RequestInit): Promise<T> {
@@ -46,17 +46,19 @@ export function fetchRoom(roomId: string) {
   return request<Room>(`/api/rooms/${roomId}`);
 }
 
-export function startRoom(roomId: string, playerId: string) {
-  return request<Room>(`/api/rooms/${roomId}/start`, {
-    method: "POST",
-    body: JSON.stringify({ playerId })
+export function updateRoomSettings(
+  roomId: string,
+  payload: UpdateRoomSettingsRequest & { hostPlayerId: string }
+) {
+  return request<Room>(`/api/rooms/${roomId}/settings`, {
+    method: "PATCH",
+    body: JSON.stringify(payload)
   });
 }
 
-export function toggleReady(roomId: string, playerId: string) {
-  return request<Room>(`/api/rooms/${roomId}/ready`, {
-    method: "POST",
-    body: JSON.stringify({ playerId })
+export function startRoom(roomId: string) {
+  return request<Room>(`/api/rooms/${roomId}/start`, {
+    method: "POST"
   });
 }
 
@@ -67,3 +69,6 @@ export function submitTurn(roomId: string, payload: TurnRequest) {
   });
 }
 
+export function fetchHealth() {
+  return request<{ ok: boolean; mode: string }>("/api/health");
+}

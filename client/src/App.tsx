@@ -1,11 +1,30 @@
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "react-qr-code";
-import { createRoom, fetchScenarios, joinRoom, startRoom, submitTurn, toggleReady as apiToggleReady } from "./api";
+import {
+  createRoom,
+  fetchHealth,
+  fetchRoom,
+  fetchScenarios,
+  joinRoom,
+  startRoom,
+  submitTurn,
+  updateRoomSettings
+} from "./api";
+import {
+  AI_HOST_SPEAKER,
+  MAX_ROOM_PLAYERS,
+  MIN_ROOM_PLAYERS,
+  Room,
+  Scenario,
+  getCurrentTurnPlayer,
+  getTurnPhaseLabel
+} from "../../shared/types";
+import { BgmPlayer } from "./components/BgmPlayer";
+import { loadPlayerSession, resolvePlayerId, savePlayerSession } from "./session";
 import { ChatMessage, useSocket, VoteState } from "./useSocket";
 import SceneRenderer from "./SceneRenderer";
 import VoiceChat from "./VoiceChat";
 import VoiceInput from "./VoiceInput";
-import { Room, RoomMode, Scenario } from "../../shared/types";
 
 function App() {
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
@@ -15,31 +34,33 @@ function App() {
   const [joinName, setJoinName] = useState("桑耳");
   const [roomCode, setRoomCode] = useState("");
   const [selectedScenario, setSelectedScenario] = useState("midnight-train");
-  const [gameMode, setGameMode] = useState<RoomMode>("multi");
+  const [maxPlayers, setMaxPlayers] = useState(3);
   const [action, setAction] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [aiMode, setAiMode] = useState<string>("checking");
+  const [thinking, setThinking] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [myPlayerName, setMyPlayerName] = useState("");
+  const messageListRef = useRef<HTMLDivElement>(null);
+
+  // invite + QR
   const [inviteCopied, setInviteCopied] = useState(false);
   const [showQR, setShowQR] = useState(false);
   const [networkBase, setNetworkBase] = useState("");
-  const [fromInvite, setFromInvite] = useState(false);
   const voiceBaseRef = useRef("");
-  const messageListRef = useRef<HTMLDivElement>(null);
+
+  // scene objects
   const [selectedObjectId, setSelectedObjectId] = useState("");
   const [focusedSceneObjectId, setFocusedSceneObjectId] = useState("");
-
-  // auto-scroll to latest message
-  useEffect(() => {
-    if (messageListRef.current) {
-      messageListRef.current.scrollTop = messageListRef.current.scrollHeight;
-    }
-  }, [room?.messages.length]);
 
   // voting state
   const [vote, setVote] = useState<VoteState | null>(null);
   const [voteChoice, setVoteChoice] = useState("");
   const [voteResult, setVoteResult] = useState<{ tally: Record<string, number>; winner: string } | null>(null);
   const [voters, setVoters] = useState<string[]>([]);
+
+  // chat
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [activeTab, setActiveTab] = useState<"story" | "chat">("story");
@@ -47,7 +68,7 @@ function App() {
   const chatListRef = useRef<HTMLDivElement>(null);
   const chatTabActiveRef = useRef(false);
 
-  // auto-scroll chat + keep ref in sync
+  // auto-scroll chat
   useEffect(() => {
     chatTabActiveRef.current = activeTab === "chat";
     if (activeTab === "chat" && chatListRef.current) {
@@ -55,7 +76,7 @@ function App() {
     }
   }, [chatMessages.length, activeTab]);
 
-  // auto-select first interactive object when they change
+  // auto-select first interactive object
   useEffect(() => {
     const objects = room?.worldState.interactiveObjects;
     if (!objects?.length) return;
@@ -70,6 +91,86 @@ function App() {
     setFocusedSceneObjectId("");
   }, [room?.scenarioId]);
 
+  // session restore
+  useEffect(() => {
+    const session = loadPlayerSession();
+    if (!session) {
+      return;
+    }
+
+    if (!playerId) {
+      setPlayerId(session.playerId);
+    }
+
+    if (!myPlayerName) {
+      setMyPlayerName(session.playerName);
+    }
+
+    if (!roomCode) {
+      setRoomCode(session.roomId);
+    }
+
+    if (!room) {
+      fetchRoom(session.roomId)
+        .then(setRoom)
+        .catch(() => undefined);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!room?.id || !playerId || !myPlayerName) {
+      return;
+    }
+
+    savePlayerSession({
+      roomId: room.id,
+      playerId,
+      playerName: myPlayerName
+    });
+  }, [room?.id, playerId, myPlayerName]);
+
+  // health check + network base
+  useEffect(() => {
+    fetchHealth()
+      .then((health) => setAiMode(health.mode))
+      .catch(() => setAiMode("unknown"));
+
+    fetch("/api/health")
+      .then((r) => r.json())
+      .then((h) => {
+        if (h.localIP) {
+          setNetworkBase(`https://${h.localIP}:5173`);
+        }
+      })
+      .catch(() => setNetworkBase(window.location.origin));
+  }, []);
+
+  // polling for room state (fallback when socket is not connected)
+  useEffect(() => {
+    if (!room?.id || loading || thinking || starting) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      fetchRoom(room.id)
+        .then(setRoom)
+        .catch(() => undefined);
+    }, 2000);
+
+    return () => window.clearInterval(timer);
+  }, [room?.id, loading, thinking, starting]);
+
+  // scroll to latest message
+  useEffect(() => {
+    const list = messageListRef.current;
+    if (!list) {
+      return;
+    }
+
+    list.scrollTop = list.scrollHeight;
+  }, [room?.messages.length, thinking, starting]);
+
+  // socket callbacks
   const onRoomState = useCallback((next: Room) => {
     setRoom(next);
   }, []);
@@ -111,31 +212,25 @@ function App() {
     onError
   });
 
-  useEffect(() => {
-    fetchScenarios()
-      .then((data) => {
-        setScenarios(data);
-        if (data[0]) {
-          setSelectedScenario(data[0].id);
-        }
-      })
-      .catch((err: Error) => setError(err.message));
-
-    fetch("/api/health")
-      .then((r) => r.json())
-      .then((h) => {
-        setNetworkBase(`https://${h.localIP}:5173`);
-      })
-      .catch(() => setNetworkBase(window.location.origin));
-
-    // auto-fill room code from invite link / QR scan
-    const params = new URLSearchParams(window.location.search);
-    const roomParam = params.get("room");
-    if (roomParam) {
-      setRoomCode(roomParam);
-      setFromInvite(true);
+  // derived state
+  const activePlayerId = useMemo(() => {
+    if (!room) {
+      return playerId;
     }
-  }, []);
+
+    return resolvePlayerId(room, playerId, myPlayerName || hostName || joinName);
+  }, [room, playerId, myPlayerName, hostName, joinName]);
+
+  const me = room?.players.find((player) => player.id === activePlayerId);
+  const currentTurnPlayer = room ? getCurrentTurnPlayer(room) : undefined;
+  const isMyTurn = Boolean(
+    room?.turnPhase === "human" &&
+      currentTurnPlayer?.kind === "human" &&
+      me?.kind === "human" &&
+      currentTurnPlayer.id === activePlayerId
+  );
+  const humanCount = room?.players.filter((player) => player.kind === "human").length ?? 0;
+  const amHost = room?.hostPlayerId === activePlayerId;
 
   const inviteUrl = room
     ? `${networkBase || window.location.origin}?room=${room.id}`
@@ -146,7 +241,6 @@ function App() {
 
     const text = inviteUrl;
 
-    // try modern clipboard API first
     if (navigator.clipboard && window.isSecureContext) {
       navigator.clipboard.writeText(text).then(() => {
         setInviteCopied(true);
@@ -169,7 +263,6 @@ function App() {
       setInviteCopied(true);
       setTimeout(() => setInviteCopied(false), 2000);
     } catch {
-      // last resort: show the URL so user can manually copy
       prompt("复制以下链接：", text);
     }
     document.body.removeChild(ta);
@@ -184,11 +277,18 @@ function App() {
       const session = await createRoom({
         hostName,
         scenarioId: selectedScenario as Scenario["id"],
-        mode: gameMode
+        maxPlayers
       });
       setRoom(session.room);
       setPlayerId(session.playerId);
+      setMyPlayerName(hostName.trim());
       setRoomCode(session.room.id);
+      setMaxPlayers(session.room.maxPlayers);
+      savePlayerSession({
+        roomId: session.room.id,
+        playerId: session.playerId,
+        playerName: hostName.trim()
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建失败");
     } finally {
@@ -207,6 +307,13 @@ function App() {
       });
       setRoom(session.room);
       setPlayerId(session.playerId);
+      setMyPlayerName(joinName.trim());
+      setMaxPlayers(session.room.maxPlayers);
+      savePlayerSession({
+        roomId: session.room.id,
+        playerId: session.playerId,
+        playerName: joinName.trim()
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "加入失败");
     } finally {
@@ -215,50 +322,81 @@ function App() {
   }
 
   async function handleStart() {
-    if (!room) return;
+    if (!room) {
+      return;
+    }
 
     try {
       setLoading(true);
-      const nextRoom = await startRoom(room.id, playerId);
+      setStarting(true);
+      setError("");
+      const nextRoom = await startRoom(room.id);
+      const activeId = resolvePlayerId(nextRoom, playerId, myPlayerName || hostName);
+      if (activeId) {
+        setPlayerId(activeId);
+      }
       setRoom({ ...nextRoom });
     } catch (err) {
       setError(err instanceof Error ? err.message : "开始失败");
     } finally {
       setLoading(false);
+      setStarting(false);
     }
   }
 
-  async function handleToggleReady() {
-    if (!room) return;
+  async function handleMaxPlayersChange(value: number) {
+    if (!room || !activePlayerId || room.hostPlayerId !== activePlayerId) {
+      setMaxPlayers(value);
+      return;
+    }
+
+    setMaxPlayers(value);
+
+    if (room.status !== "lobby") {
+      return;
+    }
+
     try {
-      const nextRoom = await apiToggleReady(room.id, playerId);
-      setRoom({ ...nextRoom });
+      const nextRoom = await updateRoomSettings(room.id, {
+        hostPlayerId: activePlayerId,
+        maxPlayers: value
+      });
+      setRoom(nextRoom);
+      setError("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "操作失败");
+      setError(err instanceof Error ? err.message : "更新人数失败");
     }
   }
 
   async function runAction(nextAction: string) {
-    if (!room || !playerId || !nextAction.trim()) return;
+    if (!room || !activePlayerId || !nextAction.trim()) return;
 
     try {
       setLoading(true);
+      setThinking(true);
+      setError("");
+
       const nextRoom = await submitTurn(room.id, {
-        playerId,
+        playerId: activePlayerId,
         content: nextAction.trim()
       });
       setRoom({ ...nextRoom });
-      setAction("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "提交失败");
     } finally {
       setLoading(false);
+      setThinking(false);
     }
   }
 
   async function handleSubmitTurn(event: FormEvent) {
     event.preventDefault();
-    await runAction(action);
+    if (!room || !activePlayerId || !action.trim()) {
+      return;
+    }
+
+    await runAction(action.trim());
+    setAction("");
   }
 
   function handleChatSubmit(event: FormEvent) {
@@ -275,14 +413,10 @@ function App() {
   function handleVoteSubmit(event: FormEvent) {
     event.preventDefault();
     if (!room || !voteChoice) return;
-    submitVote(room.id, playerId, voteChoice);
+    submitVote(room.id, activePlayerId, voteChoice);
   }
 
   const quickEmojis = ["😀","😂","🤣","😍","🤔","😎","👍","👎","🎉","❤️","🔥","💀","👀","🎲","🐉","⚔️","🛡️","🗡️","🏰","🌙","✨","💬"];
-
-  const me = room?.players.find((player) => player.id === playerId);
-  const amHost = room?.hostPlayerId === playerId;
-  const allReady = room?.players.every((p) => p.ready) ?? false;
 
   return (
     <main className="app-shell">
@@ -290,40 +424,30 @@ function App() {
         <p className="eyebrow">Hackathon Frame</p>
         <h1>AI 地下城</h1>
         <p className="hero-copy">
-          多人房间、聊天式冒险和 AI 主持人——实时联机版。
+          先把多人房间、聊天式冒险和 AI 主持人接起来，再慢慢把剧本、语音和实时联机做强。
         </p>
+        {aiMode === "no-api-key" && (
+          <p className="error-text api-banner">
+            未检测到 DeepSeek API Key。请在项目根目录创建 `.env` 并设置 `DEEPSEEK_API_KEY`，然后重启 `npm run dev`。
+          </p>
+        )}
+        {aiMode === "ai-ready" && (
+          <p className="api-ready">
+            每轮真人先依次输入指令，再由 DeepSeek 驱动的 AI 机器人依次行动。
+          </p>
+        )}
+        <BgmPlayer />
       </section>
 
       <section className="grid">
         <aside className="panel controls">
           <h2>房间操作</h2>
 
-          {/* create form: only for direct visitors, not invite-link visitors */}
-          {!room && !fromInvite && (
+          {!room && (
             <form onSubmit={handleCreateRoom} className="stack">
               <label>
                 你的名字
                 <input value={hostName} onChange={(event) => setHostName(event.target.value)} />
-              </label>
-
-              <label>
-                游戏模式
-                <div className="mode-toggle">
-                  <button
-                    type="button"
-                    className={`mode-btn ${gameMode === "single" ? "is-active" : ""}`}
-                    onClick={() => setGameMode("single")}
-                  >
-                    单人冒险
-                  </button>
-                  <button
-                    type="button"
-                    className={`mode-btn ${gameMode === "multi" ? "is-active" : ""}`}
-                    onClick={() => setGameMode("multi")}
-                  >
-                    多人房间
-                  </button>
-                </div>
               </label>
 
               <label>
@@ -340,27 +464,40 @@ function App() {
                 </select>
               </label>
 
+              <label>
+                房间人数（含 AI 补位）
+                <select
+                  value={maxPlayers}
+                  onChange={(event) => setMaxPlayers(Number(event.target.value))}
+                >
+                  {Array.from({ length: MAX_ROOM_PLAYERS - MIN_ROOM_PLAYERS + 1 }, (_, index) => {
+                    const value = index + MIN_ROOM_PLAYERS;
+                    return (
+                      <option key={value} value={value}>
+                        {value} 人局
+                      </option>
+                    );
+                  })}
+                </select>
+              </label>
+
               <button type="submit" disabled={loading}>
                 创建房间
               </button>
             </form>
           )}
 
-          {/* join form: always visible when not in a room */}
-          {!room && (
-            <form onSubmit={handleJoinRoom} className={`stack ${!fromInvite ? "join-form" : ""}`}>
-              {fromInvite && (
-                <p className="invite-hint" style={{ margin: 0, color: "var(--accent-2)", fontWeight: 700, fontSize: "0.9rem" }}>
-                  你收到了一个房间邀请
-                </p>
-              )}
+          {room && room.id === roomCode ? (
+            <p className="muted join-hint">你已在当前房间中，无需再次加入。可直接开始游戏。</p>
+          ) : (
+            <form onSubmit={handleJoinRoom} className="stack join-form">
               <label>
                 房间号
                 <input value={roomCode} onChange={(event) => setRoomCode(event.target.value)} />
               </label>
 
               <label>
-                你的名字
+                加入玩家名
                 <input value={joinName} onChange={(event) => setJoinName(event.target.value)} />
               </label>
 
@@ -372,66 +509,91 @@ function App() {
 
           {room && (
             <div className="status-card">
-              <p>房间号：<strong>{room.id}</strong></p>
-              <p>模式：{room.mode === "single" ? "单人冒险" : "多人房间"}</p>
+              <p>房间号：{room.id}</p>
               <p>状态：{room.status === "lobby" ? "等待中" : room.status === "in_progress" ? "进行中" : "已结束"}</p>
+              <p>
+                人数：{humanCount} 真人 / {room.maxPlayers} 人局
+                {room.players.filter((player) => player.kind === "bot").length > 0 &&
+                  `（${room.players.filter((player) => player.kind === "bot").length} AI 机器人）`}
+              </p>
               <p>场景：{scenarios.find((item) => item.id === room.scenarioId)?.title ?? room.scenarioId}</p>
+              {room.status === "in_progress" && (
+                <>
+                  <p className="turn-indicator">
+                    本轮阶段：{getTurnPhaseLabel(room.turnPhase)}
+                    {room.isProcessingTurn ? " · 处理中…" : ""}
+                  </p>
+                  <p className="turn-indicator">
+                    当前行动：{currentTurnPlayer?.name ?? "—"}
+                  </p>
+                </>
+              )}
               <p>当前地点：{room.worldState.currentLocation}</p>
               <p>紧张度：{room.worldState.tension} / 10</p>
               <p>回合数：{room.worldState.round}</p>
-
-              {room.status === "lobby" && room.mode === "multi" && (
-                <>
-                  <div className="ready-list">
-                    {room.players.map((p) => (
-                      <div key={p.id} className={`ready-row ${p.ready ? "is-ready" : ""}`}>
-                        <span className="ready-dot">{p.ready ? "✓" : "○"}</span>
-                        <span>{p.name}</span>
-                        {p.isHost && <span className="ready-tag">房主</span>}
-                      </div>
+              {room.status === "in_progress" && room.worldState.quests.length > 0 && (
+                <div className="quest-list">
+                  <p className="quest-title">本局目标</p>
+                  <ul>
+                    {room.worldState.quests.map((quest) => (
+                      <li key={quest}>{quest}</li>
                     ))}
-                  </div>
+                  </ul>
+                </div>
+              )}
 
-                  {amHost ? (
-                    <button onClick={handleStart} disabled={loading || !allReady}>
-                      {allReady ? "开始游戏" : "等待全员准备"}
-                    </button>
-                  ) : (
-                    <button
-                      onClick={handleToggleReady}
-                      disabled={loading}
-                      style={{ background: me?.ready ? "linear-gradient(120deg, #555, #333)" : undefined }}
+              {room.status === "lobby" && (
+                <>
+                  <label style={{ marginTop: 14, display: "block" }}>
+                    房间人数（含 AI 补位）
+                    <select
+                      value={room.maxPlayers}
+                      onChange={(event) => void handleMaxPlayersChange(Number(event.target.value))}
+                      disabled={!amHost}
                     >
-                      {me?.ready ? "取消准备" : "我准备好了"}
-                    </button>
-                  )}
+                      {Array.from({ length: MAX_ROOM_PLAYERS - MIN_ROOM_PLAYERS + 1 }, (_, index) => {
+                        const value = index + MIN_ROOM_PLAYERS;
+                        return (
+                          <option key={value} value={value}>
+                            {value} 人局
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </label>
 
-                  <div className="invite-section">
-                    <button onClick={handleCopyInvite} className="btn-invite">
-                      {inviteCopied ? "已复制！" : "复制邀请链接"}
-                    </button>
-                    <button
-                      onClick={() => setShowQR(!showQR)}
-                      className="btn-invite"
-                      style={{ marginTop: 8, background: "linear-gradient(120deg, #555, #333)" }}
-                    >
-                      {showQR ? "收起二维码" : "显示二维码"}
-                    </button>
-                    {showQR && (
-                      <div className="qr-wrap">
-                        <QRCode value={inviteUrl} size={140} />
-                        <p className="muted" style={{ fontSize: "0.7rem", marginTop: 6 }}>
-                          扫描二维码加入房间
-                        </p>
-                      </div>
-                    )}
-                    {room.players.length > 0 && (
-                      <p className="muted" style={{ fontSize: "0.75rem", marginTop: "0.25rem" }}>
-                        等待中：{room.players.map((p) => p.name).join("、")}
-                      </p>
-                    )}
-                  </div>
+                  <button onClick={handleStart} disabled={loading || starting || aiMode !== "ai-ready"}>
+                    {starting ? "AI 撰写开场…" : "开始游戏"}
+                  </button>
                 </>
+              )}
+
+              {room.status === "lobby" && (
+                <div className="invite-section">
+                  <button onClick={handleCopyInvite} className="btn-invite">
+                    {inviteCopied ? "已复制！" : "复制邀请链接"}
+                  </button>
+                  <button
+                    onClick={() => setShowQR(!showQR)}
+                    className="btn-invite"
+                    style={{ marginTop: 8, background: "linear-gradient(120deg, #555, #333)" }}
+                  >
+                    {showQR ? "收起二维码" : "显示二维码"}
+                  </button>
+                  {showQR && (
+                    <div className="qr-wrap">
+                      <QRCode value={inviteUrl} size={140} />
+                      <p className="muted" style={{ fontSize: "0.7rem", marginTop: 6 }}>
+                        扫描二维码加入房间
+                      </p>
+                    </div>
+                  )}
+                  {room.players.length > 0 && (
+                    <p className="muted" style={{ fontSize: "0.75rem", marginTop: "0.25rem" }}>
+                      等待中：{room.players.map((p) => p.name).join("、")}
+                    </p>
+                  )}
+                </div>
               )}
             </div>
           )}
@@ -490,7 +652,7 @@ function App() {
             </div>
           )}
 
-          {error && <p className="error-text">{error}</p>}
+          {error && !room && <p className="error-text">{error}</p>}
         </aside>
 
         <section className="panel story-panel">
@@ -514,7 +676,7 @@ function App() {
                 )}
               </button>
             </div>
-            <span>{activeTab === "story" ? "自由输入比按钮更重要" : "自由聊天，不影响剧情"}</span>
+            <span>{activeTab === "story" ? (isMyTurn ? "轮到你了，请输入行动" : "等待其他成员行动") : "自由聊天，不影响剧情"}</span>
           </div>
 
           {activeTab === "story" && (
@@ -534,16 +696,25 @@ function App() {
 
               <div className="message-list" ref={messageListRef}>
                 {room?.messages.map((message) => (
-                  <article key={message.id} className={`message message-${message.type}`}>
+                  <article
+                    key={message.id}
+                    className={`message message-${message.type} ${
+                      message.variant === "tease"
+                        ? "message-tease"
+                        : message.variant === "brief"
+                          ? "message-brief"
+                          : ""
+                    }`}
+                  >
                     <p className="message-speaker">{message.speaker}</p>
                     <p>{message.content}</p>
                   </article>
                 ))}
 
-                {room && room.messages.length > 0 && room.messages[room.messages.length - 1].type === "player" && (
-                  <article className="message message-ai">
-                    <p className="message-speaker">AI DM</p>
-                    <p className="thinking-dots">思考中<span>.</span><span>.</span><span>.</span></p>
+                {(thinking || starting) && (
+                  <article className="message message-ai message-pending">
+                    <p className="message-speaker">{AI_HOST_SPEAKER}</p>
+                    <p>{starting ? "正在撰写开场剧情，请稍候…" : "正在根据你的行动推演剧情，请稍候…"}</p>
                   </article>
                 )}
 
@@ -555,12 +726,20 @@ function App() {
                 )}
               </div>
 
+              {error && activeTab === "story" && <p className="error-text story-error">{error}</p>}
+
               <form onSubmit={handleSubmitTurn} className="action-bar">
                 <input
-                  placeholder="输入你的行动，例如：我偷走地图 / 我观察谁最紧张"
+                  placeholder={
+                    isMyTurn
+                      ? "输入你的行动，例如：我偷走地图 / 我观察谁最紧张"
+                      : room?.isProcessingTurn
+                        ? "AI 机器人或主持人处理中…"
+                        : `等待 ${currentTurnPlayer?.name ?? "其他玩家"} 行动`
+                  }
                   value={action}
                   onChange={(event) => setAction(event.target.value)}
-                  disabled={room?.status !== "in_progress"}
+                  disabled={room?.status !== "in_progress" || !isMyTurn || room.isProcessingTurn}
                 />
                 <VoiceInput
                   onResult={(text) => {
@@ -574,10 +753,21 @@ function App() {
                       return base ? `${base} ${text}` : text;
                     });
                   }}
-                  disabled={room?.status !== "in_progress"}
+                  disabled={room?.status !== "in_progress" || !isMyTurn || room.isProcessingTurn}
                 />
-                <button type="submit" disabled={loading || room?.status !== "in_progress"}>
-                  {loading ? "DM 回应中..." : "执行"}
+                <button
+                  type="submit"
+                  disabled={
+                    loading ||
+                    thinking ||
+                    starting ||
+                    room?.status !== "in_progress" ||
+                    !isMyTurn ||
+                    room?.isProcessingTurn ||
+                    aiMode !== "ai-ready"
+                  }
+                >
+                  {thinking ? "AI 回复中…" : isMyTurn ? "执行" : "等待回合"}
                 </button>
               </form>
             </>
@@ -641,10 +831,17 @@ function App() {
           )}
 
           {room?.players.map((player) => (
-            <article key={player.id} className={`player-card ${player.id === playerId ? "is-me" : ""}`}>
+            <article
+              key={player.id}
+              className={`player-card ${player.id === activePlayerId ? "is-me" : ""} ${
+                player.kind === "bot" ? "is-bot" : ""
+              } ${currentTurnPlayer?.id === player.id ? "is-active-turn" : ""}`}
+            >
               <p className="player-name">
                 {player.name}
                 {player.isHost ? " · 房主" : ""}
+                {player.kind === "bot" ? " · AI" : ""}
+                {currentTurnPlayer?.id === player.id ? " · 行动中" : ""}
               </p>
               <p>{player.roleCard?.role ?? "等待分配身份"}</p>
               <p>{player.roleCard?.personality ?? "待开始"}</p>

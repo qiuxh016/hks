@@ -1,5 +1,5 @@
-import OpenAI from "openai";
 import {
+  AI_HOST_SPEAKER,
   InteractiveObject,
   Player,
   RoleCard,
@@ -7,42 +7,41 @@ import {
   ScenarioId
 } from "../shared/types";
 import { getScenario } from "./scenarios";
-
-// --------------- role decks ---------------
+import { formatMemoryForPrompt } from "./memory";
 
 const roleDecks: Record<ScenarioId, Array<Omit<RoleCard, "personality"> & { personalities: string[] }>> = {
   "midnight-train": [
     {
       role: "报社记者",
-      backstory: "你追踪一桩连环失踪案来到这趟列车，怀里还藏着一卷没来得及送出的底片。",
-      secretGoal: "在找到真正的凶手前，先保住你拍到的关键证据。",
+      backstory: "你追踪一桩连环失踪案来到这趟列车。",
+      secretGoal: "找到真正的凶手前，先保住自己拍到的底片。",
       personalities: ["嘴快", "敏感", "爱怀疑人"]
     },
     {
       role: "退役警探",
-      backstory: "你本来已经金盆洗手，却被一封匿名信重新拖回这场旧案。",
-      secretGoal: "掩盖你与第一名死者之间那段不该曝光的旧关系。",
+      backstory: "你本来已经金盆洗手，却被一封匿名信引回现场。",
+      secretGoal: "掩盖你与第一名死者之间的旧关系。",
       personalities: ["克制", "疲惫", "观察力强"]
     },
     {
       role: "神秘乘务员",
-      backstory: "你对整趟列车的结构了如指掌，但履历和姓名都查不到任何记录。",
-      secretGoal: "别让任何人进入最后一节被封锁的车厢。",
+      backstory: "你对这趟列车的结构了如指掌，但履历查不到任何记录。",
+      secretGoal: "别让任何人进入最后一节封锁车厢。",
       personalities: ["礼貌", "阴冷", "说话留半句"]
     }
   ],
   "office-dungeon": [
     {
       role: "产品经理",
-      backstory: "你被要求在今晚之前交出一份根本不可能做完的方案，整个部门都在等你背锅。",
+      backstory: "你被要求在今晚之前交出一份根本不可能做完的方案。",
       secretGoal: "把锅悄悄甩给别人，同时保住你的晋升名额。",
       personalities: ["会说场面话", "爱控制节奏", "求生欲强"]
     },
     {
       role: "实习生",
-      backstory: "你看似无害，实际上掌握了公司最危险的一份八卦文档。",
+      backstory: "你看似无害，实际上掌握了公司最危险的八卦。",
       secretGoal: "在不被开除的前提下，换到更好的组。",
-      personalities: ["社恐", "聪明", "擅长装糊涂"]
+      personalities: ["社恐", "聪明", "擅长装乖"]
     },
     {
       role: "HR",
@@ -54,46 +53,139 @@ const roleDecks: Record<ScenarioId, Array<Omit<RoleCard, "personality"> & { pers
   "noble-banquet": [
     {
       role: "失宠贵族",
-      backstory: "你的家族正走向衰败，这场晚宴也许是你最后一次翻盘的机会。",
+      backstory: "你的家族正走向衰败，这场晚宴也许是最后的翻身机会。",
       secretGoal: "想办法和最有权势的人结盟。",
       personalities: ["优雅", "焦虑", "好胜"]
     },
     {
       role: "宫廷医师",
-      backstory: "你见过太多秘密，因此没有人敢真正信任你。",
-      secretGoal: "抢在别人之前找到那份失踪的遗嘱。",
+      backstory: "你见过太多秘密，因此谁都不敢完全信任你。",
+      secretGoal: "抢在别人之前找到那份失踪遗嘱。",
       personalities: ["冷静", "审慎", "毒舌"]
     },
     {
       role: "外来宾客",
-      backstory: "你表面上是客人，实际上背后另有一股势力在支持你。",
-      secretGoal: "把这场晚宴搅乱，让所有人开始互相猜疑。",
+      backstory: "你表面上是客人，实际上背后有另一股势力支持。",
+      secretGoal: "把晚宴搅乱，让所有人互相猜疑。",
       personalities: ["迷人", "危险", "喜欢试探别人"]
     }
   ]
 };
 
-// --------------- helpers ---------------
+type DeepSeekMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+};
+
+type DeepSeekResponse = {
+  choices?: Array<{
+    message?: {
+      content?: string;
+    };
+  }>;
+  error?: {
+    message?: string;
+  };
+};
+
+type DmReply = {
+  narration: string;
+  nextLocation: string;
+};
+
+export type OpeningPackage = {
+  storyDirection: string;
+  coreTruth: string;
+  objectives: string[];
+  narration: string;
+  nextLocation: string;
+};
+
+function extractSection(raw: string, sectionTitle: string) {
+  const pattern = new RegExp(
+    `##\\s*${sectionTitle}\\s*\\n+([\\s\\S]*?)(?=\\n##\\s*|\\n【地点|$)`,
+    "i"
+  );
+  const match = raw.match(pattern);
+  return match?.[1]?.trim() ?? "";
+}
+
+function extractObjectives(raw: string) {
+  const block = extractSection(raw, "本局必做") || extractSection(raw, "必做事项");
+  if (!block) {
+    return [];
+  }
+
+  return block
+    .split("\n")
+    .map((line) => line.replace(/^[\d\-*、．.]+\s*/, "").trim())
+    .filter((line) => line.length > 0)
+    .slice(0, 5);
+}
+
+function parseOpeningPackage(raw: string, scenarioTitle: string): OpeningPackage {
+  const storyDirection =
+    extractSection(raw, "故事走向") || "你们被卷入一场无法回头的风波，真相藏在细节里。";
+  const coreTruth =
+    extractSection(raw, "要找到的真相") ||
+    extractSection(raw, "核心真相") ||
+    "查明事件背后真正的操纵者。";
+  const objectives = extractObjectives(raw);
+  const storyBlock = extractSection(raw, "开场剧情") || raw;
+  const parsedStory = parseDmReply(storyBlock, "故事开场");
+
+  return {
+    storyDirection,
+    coreTruth,
+    objectives:
+      objectives.length > 0
+        ? objectives
+        : ["调查现场线索", "找出关键证人", `揭开${scenarioTitle}背后的真相`],
+    narration: parsedStory.narration,
+    nextLocation: parsedStory.nextLocation
+  };
+}
+
+function formatMissionBrief(pkg: OpeningPackage) {
+  const objectiveLines = pkg.objectives.map((item, index) => `${index + 1}. ${item}`).join("\n");
+
+  return [
+    "📜 本局任务简报（请先阅读，再开始行动）",
+    "",
+    "【故事走向】",
+    pkg.storyDirection,
+    "",
+    "【要找到的真相】",
+    pkg.coreTruth,
+    "",
+    "【本局必做】",
+    objectiveLines,
+    "",
+    "提示：你的行动应尽量服务于以上目标，AI 主持人会据此推进剧情。"
+  ].join("\n");
+}
 
 function pick<T>(list: T[], index: number): T {
   return list[index % list.length];
 }
 
-function createOpenAI(): OpenAI | null {
-  const apiKey = process.env.OPENAI_API_KEY;
-  const baseURL = process.env.OPENAI_BASE_URL;
+export function buildRoleCards(scenarioId: ScenarioId, players: Player[]): RoleCard[] {
+  const deck = roleDecks[scenarioId];
 
-  if (!apiKey) return null;
-
-  return new OpenAI({
-    apiKey,
-    baseURL: baseURL || undefined
+  return players.map((player, index) => {
+    const base = pick(deck, index);
+    return {
+      role: base.role,
+      backstory: base.backstory,
+      secretGoal: base.secretGoal,
+      personality: pick(base.personalities, player.name.length + index)
+    };
   });
 }
 
-// --------------- scene objects ---------------
+// ----- scene objects (for interactive scene visualization) -----
 
-function buildSceneObjects(scenarioId: ScenarioId): InteractiveObject[] {
+export function buildSceneObjects(scenarioId: ScenarioId): InteractiveObject[] {
   if (scenarioId === "midnight-train") {
     return [
       {
@@ -208,7 +300,7 @@ function buildSceneObjects(scenarioId: ScenarioId): InteractiveObject[] {
   ];
 }
 
-function getSceneMeta(scenarioId: ScenarioId) {
+export function getSceneMeta(scenarioId: ScenarioId) {
   if (scenarioId === "midnight-train") {
     return {
       sceneTitle: "暴雨列车车厢",
@@ -229,42 +321,6 @@ function getSceneMeta(scenarioId: ScenarioId) {
   };
 }
 
-// --------------- role cards ---------------
-
-export function buildRoleCards(scenarioId: ScenarioId, players: Player[]): RoleCard[] {
-  const deck = roleDecks[scenarioId];
-
-  return players.map((player, index) => {
-    const base = pick(deck, index);
-    return {
-      role: base.role,
-      backstory: base.backstory,
-      secretGoal: base.secretGoal,
-      personality: pick(base.personalities, player.name.length + index)
-    };
-  });
-}
-
-// --------------- opening ---------------
-
-export function buildOpening(room: Room) {
-  const scenario = getScenario(room.scenarioId);
-  const playerNames = room.players.map((player) => player.name).join("、");
-
-  return [
-    {
-      type: "system" as const,
-      speaker: "系统",
-      content: `游戏开始，当前剧本：${scenario.title}。每个人都拿到了只属于自己的身份和秘密。`
-    },
-    {
-      type: "ai" as const,
-      speaker: "AI DM",
-      content: `${playerNames}，欢迎来到《${scenario.title}》。${scenario.pitch} 开场异象：${scenario.openingHook} 你们现在都意识到，今晚不会有人毫发无伤地离开。`
-    }
-  ];
-}
-
 export function buildInitialSceneState(scenarioId: ScenarioId) {
   const meta = getSceneMeta(scenarioId);
 
@@ -280,173 +336,306 @@ export function buildInitialSceneState(scenarioId: ScenarioId) {
   };
 }
 
-// --------------- AI DM ---------------
+// ----- DeepSeek AI DM integration -----
 
-function buildSystemPrompt(room: Room): string {
-  const scenario = getScenario(room.scenarioId);
-  const ws = room.worldState;
+function formatPlayerRoster(room: Room) {
+  return room.players
+    .map((player) => {
+      const card = player.roleCard;
+      if (!card) {
+        return `- ${player.name}`;
+      }
 
-  const playerList = room.players.map((p) => {
-    if (p.roleCard) {
-      return `- ${p.name}（${p.roleCard.role}），性格${p.roleCard.personality}`;
-    }
-    return `- ${p.name}`;
-  }).join("\n");
-
-  return `你是地下城主持人（AI DM），负责一个多人即兴文字冒险游戏。
-
-【剧本】
-名称：《${scenario.title}》
-调性：${scenario.tone}
-设定：${scenario.pitch}
-
-【当前状态】
-地点：${ws.currentLocation}
-回合数：${ws.round}
-紧张度：${ws.tension}/10
-活跃任务：${ws.quests.join("、") || "暂无"}
-
-【玩家角色】
-${playerList}
-
-【你的职责】
-1. 根据玩家输入即兴推进剧情，像真正的桌游主持人一样灵活
-2. 每个行动必须产生后果——好坏、意外、连锁反应皆可
-3. 扮演场景中的 NPC，让世界感觉"活"的
-4. 制造戏剧冲突和悬念，鼓励玩家之间互动猜疑
-5. 绝对不能替玩家做决定，也不能泄露任何玩家的隐藏目标或秘密
-6. 旁白控制在 3-6 句中文，风格贴合剧本调性（${scenario.tone}）
-7. 当玩家做出离谱操作时，认真对待，给出合理的世界反馈
-8. 适时引入新线索、新 NPC 或意外事件
-9. 回复格式：只输出旁白叙述，不要加任何前缀或标签`;
-}
-
-function buildUserMessage(room: Room, player: Player, content: string): string {
-  const recentMessages = room.messages
-    .slice(-10)
-    .map((m) => `[${m.speaker}]：${m.content}`)
+      return [
+        `- ${player.name}｜${card.role}｜性格：${card.personality}`,
+        `  背景：${card.backstory}`,
+        `  隐藏目标（仅主持人知晓，勿向其他玩家泄露）：${card.secretGoal}`
+      ].join("\n");
+    })
     .join("\n");
-
-  return `【最近剧情】
-${recentMessages}
-
-【当前行动】
-${player.name}（${player.roleCard?.role ?? "未知身份"}）：${content}
-
-请作为 DM 叙述这个行动的结果和世界的反应。`;
 }
 
-async function resolveTurnWithAI(
-  room: Room,
-  player: Player,
-  content: string
-): Promise<{ narration: string }> {
-  const openai = createOpenAI();
-  if (!openai) throw new Error("no-openai-client");
+function buildSystemPrompt(room: Room) {
+  const scenario = getScenario(room.scenarioId);
+  const quests =
+    room.worldState.quests.length > 0
+      ? room.worldState.quests.join("、")
+      : "（尚未明确）";
 
-  const response = await openai.chat.completions.create({
-    model: process.env.OPENAI_MODEL || "gpt-4o-mini",
-    messages: [
-      { role: "system", content: buildSystemPrompt(room) },
-      { role: "user", content: buildUserMessage(room, player, content) }
-    ],
-    temperature: 0.8,
-    max_tokens: 500
+  return [
+    "你是桌游《龙与地下城》的 AI 主持人，正在主持一场中文即兴冒险。",
+    "你的职责：",
+    "1. 根据玩家自由行动判定结果，世界必须持续推进，每个行动都有明确后果。",
+    "2. 语气沉浸、有画面感，可带黑色幽默或悬疑张力，符合剧本基调。",
+    "3. 不要代替玩家做决定，不要跳出角色做系统说明。",
+    "4. 鼓励戏剧冲突：NPC 会撒谎、环境会反噬、线索可能误导。",
+    "5. 回复使用中文，正文 100-220 字。",
+    "6. 必须呼应玩家长期记忆里的历史操作，不要前后矛盾或失忆。",
+    "7. 在正文最后一行单独写：【地点：当前场景名】（玩家看不见这行格式说明，只作为场景标记）。",
+    "",
+    formatMemoryForPrompt(room),
+    "",
+    `剧本：${scenario.title}（${scenario.tone}）`,
+    `简介：${scenario.pitch}`,
+    `核心异象：${scenario.openingHook}`,
+    `当前回合：${room.worldState.round}`,
+    `当前地点：${room.worldState.currentLocation}`,
+    `紧张度：${room.worldState.tension}/10`,
+    `当前任务线索：${quests}`,
+    "",
+    "玩家与身份（主持人视角）：",
+    formatPlayerRoster(room)
+  ].join("\n");
+}
+
+function buildConversationMessages(room: Room, player: Player, action: string): DeepSeekMessage[] {
+  const messages: DeepSeekMessage[] = [
+    {
+      role: "system",
+      content: buildSystemPrompt(room)
+    }
+  ];
+
+  const storyMessages = room.messages.filter(
+    (message) => message.type === "player" || message.type === "ai"
+  );
+
+  for (const message of storyMessages.slice(-24)) {
+    if (message.type === "player") {
+      messages.push({
+        role: "user",
+        content: `【玩家 ${message.speaker}】${message.content}`
+      });
+      continue;
+    }
+
+    messages.push({
+      role: "assistant",
+      content: message.content
+    });
+  }
+
+  messages.push({
+    role: "user",
+    content: `【玩家 ${player.name} 本轮行动】${action}\n请判定结果并推进剧情。记住在最后一行标注【地点：xxx】。`
   });
 
-  const narration = response.choices[0]?.message?.content?.trim();
-  if (!narration) throw new Error("AI returned empty response");
-
-  return { narration };
+  return messages;
 }
 
-// --------------- fallback (mock DM) ---------------
+function parseDmReply(raw: string, fallbackLocation: string): DmReply {
+  const locationPattern = /【地点[：:]\s*(.+?)】\s*$/;
+  const match = raw.match(locationPattern);
 
-const dramaticTwists = [
-  "你刚做完动作，屋内最紧张的人忽然抢先一步开口，似乎想把矛头引向别人。",
-  "空气里传来一阵短促的笑声，像是有人早就预料到你会这么做。",
-  "你的行动触发了新的线索，但也让一个隐藏更深的秘密浮出水面。",
-  "事情短暂朝有利方向发展，可代价是房间里的信任感继续崩坏。"
-];
-
-function inferOutcome(action: string) {
-  if (action.includes("搜") || action.includes("调查") || action.toLowerCase().includes("check")) {
-    return "你翻到了不该被看见的痕迹，但也让某个旁观者开始提防你。";
+  if (!match) {
+    return {
+      narration: raw.trim(),
+      nextLocation: fallbackLocation
+    };
   }
-  if (action.includes("偷") || action.includes("抢") || action.toLowerCase().includes("steal")) {
-    return "你动作很快，目标到手了一半，可惜另一个人显然看见了。";
-  }
-  if (action.includes("骗") || action.includes("嘴") || action.includes("说服")) {
-    return "对方表面上被你说动了，实际上他只是想看看你还能编到什么程度。";
-  }
-  if (action.includes("跑") || action.includes("逃")) {
-    return "你确实离开了原地，但逃跑本身也把你送进了更糟的新局面。";
-  }
-  if (action.includes("恋爱") || action.includes("撩") || action.includes("色诱")) {
-    return "气氛被你搅得暧昧起来，可暧昧在这里往往比刀子更危险。";
-  }
-  return "世界接住了你的行动，但也顺手把新的麻烦推到了台面上。";
-}
-
-function resolveTurnMock(room: Room, player: Player, content: string) {
-  const twist = pick(dramaticTwists, room.worldState.round + content.length);
-  const outcome = inferOutcome(content);
-  const matchingObject = room.worldState.interactiveObjects.find(
-    (item) => content.includes(item.name) || item.actions.some((action) => content.includes(action))
-  );
-
-  const newClue =
-    room.scenarioId === "midnight-train"
-      ? "尸体周围没有太多挣扎痕迹，像是被拖到车厢中央的。"
-      : room.scenarioId === "office-dungeon"
-        ? "23:47 之前，老板工位和会议室之间一定有人匆忙来回过。"
-        : "宴会名单上多出了一位没有人承认邀请过的名字。";
-
-  const interactiveObjects = room.worldState.interactiveObjects.map((item) =>
-    item.id === matchingObject?.id
-      ? {
-          ...item,
-          status: `刚被 ${player.name} 盯上，现在比之前更可疑`
-        }
-      : item
-  );
 
   return {
-    narration: `${player.name}刚刚选择"${content}"。${outcome}${matchingObject ? ` 你的注意力现在落在${matchingObject.name}上。` : ""}${twist}`,
-    nextLocation:
-      room.scenarioId === "midnight-train"
-        ? "列车车厢"
-        : room.scenarioId === "office-dungeon"
-          ? "开放办公区"
-          : "宴会主厅",
-    newClue,
-    interactiveObjects
+    narration: raw.replace(locationPattern, "").trim(),
+    nextLocation: match[1].trim() || fallbackLocation
   };
 }
 
-// --------------- main entry ---------------
-
-export async function resolveTurn(room: Room, player: Player, content: string) {
-  const scenario = getScenario(room.scenarioId);
-  const defaultLocation =
-    room.scenarioId === "midnight-train"
-      ? "列车车厢"
-      : room.scenarioId === "office-dungeon"
-        ? "开放办公区"
-        : "宴会主厅";
-
-  // try AI first
-  try {
-    const result = await resolveTurnWithAI(room, player, content);
-    return {
-      narration: result.narration,
-      nextLocation: defaultLocation,
-      newClue: "",
-      interactiveObjects: room.worldState.interactiveObjects
-    };
-  } catch {
-    // fallback to mock DM
-    console.warn("[dm] AI unavailable, using mock DM");
-    return resolveTurnMock(room, player, content);
+export async function createDeepSeekReply(
+  messages: DeepSeekMessage[],
+  options?: { maxTokens?: number }
+) {
+  const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error("未配置 DEEPSEEK_API_KEY，请先在 .env 中设置。");
   }
+
+  const baseUrl = (process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com").replace(/\/$/, "");
+  const model = process.env.DEEPSEEK_MODEL ?? "deepseek-chat";
+  const endpoint = baseUrl.endsWith("/v1")
+    ? `${baseUrl}/chat/completions`
+    : `${baseUrl}/v1/chat/completions`;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60_000);
+
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.85,
+        max_tokens: options?.maxTokens ?? 600,
+        messages
+      })
+    });
+
+    const payload = (await response.json().catch(() => ({}))) as DeepSeekResponse;
+
+    if (!response.ok) {
+      throw new Error(payload.error?.message ?? `DeepSeek 请求失败（${response.status}）`);
+    }
+
+    const reply = payload.choices?.[0]?.message?.content?.trim();
+    if (!reply) {
+      throw new Error("DeepSeek 返回为空");
+    }
+
+    return reply;
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("DeepSeek 响应超时，请稍后重试。");
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function buildOpening(room: Room) {
+  const scenario = getScenario(room.scenarioId);
+  const playerNames = room.players.map((player) => player.name).join("、");
+  const roster = room.players
+    .map((player) => {
+      const card = player.roleCard;
+      return card ? `${player.name}（${card.role}）` : player.name;
+    })
+    .join("、");
+
+  const openingRaw = await createDeepSeekReply(
+    [
+      {
+        role: "system",
+        content: [
+          "你是桌游 AI 主持人，正在为玩家生成开局简报。",
+          "必须用中文，且严格按下列 Markdown 小节标题输出，不要省略任何一节：",
+          "## 故事走向",
+          "## 要找到的真相",
+          "## 本局必做",
+          "## 开场剧情",
+          "",
+          "写作要求：",
+          "- 故事走向：80-120字，说明本局整体方向、矛盾与风险。",
+          "- 要找到的真相：写清核心谜题（1-2句）+ 玩家最终要揭开的答案方向。",
+          "- 本局必做：列出 3 条可执行的具体目标（调查、取证、交涉、生存等），让玩家有明确方向，不要空泛。",
+          "- 开场剧情：180-240字沉浸叙事，有画面感，呼应开场异象；最后一行单独写【地点：xxx】。",
+          `- 剧本：${scenario.title}（${scenario.tone}）`,
+          `- 简介：${scenario.pitch}`,
+          `- 异象：${scenario.openingHook}`
+        ].join("\n")
+      },
+      {
+        role: "user",
+        content: [
+          `请为《${scenario.title}》生成开局简报与开场剧情。`,
+          `参与角色：${roster}`,
+          `玩家名：${playerNames}`,
+          "目标：让玩家在开始行动前就知道故事走向、要查明的真相、以及必须完成的事项。"
+        ].join("\n")
+      }
+    ],
+    { maxTokens: 1000 }
+  );
+
+  const opening = parseOpeningPackage(openingRaw, scenario.title);
+
+  return {
+    messages: [
+      {
+        type: "system" as const,
+        speaker: "系统",
+        content: `游戏开始 · 剧本《${scenario.title}》。共 ${room.players.length} 名成员。请先阅读下方任务简报，再输入你的行动。`,
+        variant: "brief" as const
+      },
+      {
+        type: "system" as const,
+        speaker: "任务简报",
+        content: formatMissionBrief(opening),
+        variant: "brief" as const
+      },
+      {
+        type: "ai" as const,
+        speaker: AI_HOST_SPEAKER,
+        content: opening.narration
+      }
+    ],
+    nextLocation: opening.nextLocation,
+    quests: opening.objectives,
+    storyDirection: opening.storyDirection,
+    coreTruth: opening.coreTruth
+  };
+}
+
+export async function resolveTurn(room: Room, player: Player, content: string): Promise<DmReply> {
+  const raw = await createDeepSeekReply(buildConversationMessages(room, player, content));
+  return parseDmReply(raw, room.worldState.currentLocation);
+}
+
+export async function refreshStorySummary(room: Room) {
+  const memory = room.worldState.memory;
+  if (!memory.storySummary && countActions(memory) === 0) {
+    return memory.storySummary;
+  }
+
+  const summary = await createDeepSeekReply([
+    {
+      role: "system",
+      content:
+        "你是主持人助理，负责把冒险日志压缩成简洁中文摘要（150字以内），保留：关键事件、玩家做过的重要行动、未解悬念。只输出摘要正文。"
+    },
+    {
+      role: "user",
+      content: [
+        formatMemoryForPrompt(room),
+        "",
+        "最近对话摘录：",
+        room.messages
+          .filter((message) => message.type === "player" || message.type === "ai")
+          .slice(-10)
+          .map((message) => `${message.speaker}: ${message.content}`)
+          .join("\n")
+      ].join("\n")
+    }
+  ]);
+
+  memory.storySummary = summary.trim();
+  return memory.storySummary;
+}
+
+function countActions(memory: Room["worldState"]["memory"]) {
+  return Object.values(memory.playerActions).reduce((total, list) => total + list.length, 0);
+}
+
+export async function generateTease(room: Room) {
+  const recentActions = room.players
+    .map((player) => {
+      const actions = room.worldState.memory.playerActions[player.id] ?? [];
+      const last = actions.slice(-3).map((item) => item.content).join("；");
+      return last ? `${player.name}最近：${last}` : null;
+    })
+    .filter(Boolean)
+    .join("\n");
+
+  const raw = await createDeepSeekReply([
+    {
+      role: "system",
+      content: [
+        "你是桌游 AI 主持人，现在暂时跳出剧情，用 50-120 字调侃玩家最近的骚操作。",
+        "要求：诙谐、腹黑、像老朋友吐槽；可夸张但不要人身攻击；不要推进主线剧情；不要写地点标记。",
+        "必须引用玩家真实做过的操作（见记忆档案），让他们感到你记得他们干过什么。",
+        formatMemoryForPrompt(room)
+      ].join("\n")
+    },
+    {
+      role: "user",
+      content: `请根据以下最近操作写一段调侃旁白：\n${recentActions || "玩家们还在观望"}`
+    }
+  ]);
+
+  return raw.replace(/【地点[：:].+?】\s*$/u, "").trim();
 }
