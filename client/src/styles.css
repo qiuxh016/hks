@@ -6,9 +6,6 @@
   --card: rgba(255, 248, 241, 0.84);
   --line: rgba(73, 55, 40, 0.15);
   --accent: #a43f2d;
-  --accent-soft: #d58661;
-  --night: #171a24;
-  --gold: #e0b66d;
 }
 
 * {
@@ -208,28 +205,62 @@ select {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
+.scene-board.has-backdrop {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 20px 50px rgba(17, 12, 10, 0.18);
+}
+
+.scene-board.is-focused-view {
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
 .scene-vignette {
   position: absolute;
   inset: 0;
   pointer-events: none;
   background:
     radial-gradient(circle at center, transparent 34%, rgba(7, 7, 10, 0.18) 100%),
-    linear-gradient(180deg, rgba(8, 8, 10, 0.1), rgba(8, 8, 10, 0.22));
+    linear-gradient(180deg, rgba(8, 8, 10, 0.06), rgba(8, 8, 10, 0.18));
+}
+
+.scene-focus-header {
+  position: absolute;
+  top: 18px;
+  left: 18px;
+  right: 18px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.scene-focus-header strong {
+  display: block;
+  margin-top: 0.2rem;
+  color: #fff7ef;
+  font-size: 1.4rem;
+}
+
+.scene-back-button {
+  padding: 0.7rem 1rem;
+  background: rgba(12, 16, 22, 0.68);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  backdrop-filter: blur(8px);
 }
 
 .scene-midnight-train {
-  background:
-    linear-gradient(180deg, #3e2a23 0%, #2c2120 100%);
+  background: linear-gradient(180deg, #3e2a23 0%, #2c2120 100%);
 }
 
 .scene-office-dungeon {
-  background:
-    linear-gradient(180deg, #cfddd9 0%, #a0b1ad 18%, #6f7f7f 60%, #4a5758 100%);
+  background: linear-gradient(180deg, #cfddd9 0%, #a0b1ad 18%, #6f7f7f 60%, #4a5758 100%);
 }
 
 .scene-noble-banquet {
-  background:
-    linear-gradient(180deg, #3e2130 0%, #5f2e35 36%, #3f2e44 100%);
+  background: linear-gradient(180deg, #3e2130 0%, #5f2e35 36%, #3f2e44 100%);
 }
 
 .scene-placeholder-art {
@@ -238,28 +269,42 @@ select {
   background: radial-gradient(circle at center, rgba(255, 255, 255, 0.18), transparent 50%);
 }
 
-.scene-rain,
-.scene-rain-back {
+.backdrop-shimmer {
   position: absolute;
-  inset: -20% -10%;
-  background-image: repeating-linear-gradient(
-    110deg,
-    rgba(201, 223, 255, 0) 0 14px,
-    rgba(201, 223, 255, 0.26) 14px 16px,
-    rgba(201, 223, 255, 0) 16px 30px
-  );
-  animation: rainSlide 1.3s linear infinite;
-  opacity: 0.55;
+  inset: 0;
+  background:
+    linear-gradient(110deg, transparent 18%, rgba(255, 255, 255, 0.08) 32%, transparent 46%),
+    radial-gradient(circle at 50% 24%, rgba(255, 225, 163, 0.18), transparent 28%);
+  mix-blend-mode: screen;
+  animation: shimmerSweep 10s linear infinite;
 }
 
-.scene-rain-back {
-  opacity: 0.22;
-  transform: scale(1.2);
-  animation-duration: 2.2s;
+.train-ceiling,
+.train-lamp,
+.train-lamp-glow,
+.train-window,
+.train-seat,
+.train-aisle,
+.body-shadow,
+.body-outline,
+.npc-silhouette,
+.office-grid-light,
+.office-monitor,
+.office-desk,
+.office-glass-room,
+.office-alert,
+.office-coffee-spill,
+.sticky-note,
+.banquet-curtain,
+.banquet-chandelier,
+.banquet-light,
+.banquet-table,
+.banquet-moonlight,
+.banquet-sparkle {
+  position: absolute;
 }
 
 .train-ceiling {
-  position: absolute;
   left: 4%;
   right: 4%;
   top: 5%;
@@ -270,7 +315,6 @@ select {
 }
 
 .train-lamp {
-  position: absolute;
   left: 50%;
   top: 15%;
   width: 120px;
@@ -282,7 +326,6 @@ select {
 }
 
 .train-lamp-glow {
-  position: absolute;
   left: 50%;
   top: 16%;
   width: 240px;
@@ -294,7 +337,6 @@ select {
 }
 
 .train-window {
-  position: absolute;
   top: 16%;
   width: 16%;
   height: 42%;
@@ -320,7 +362,6 @@ select {
 }
 
 .train-seat {
-  position: absolute;
   bottom: 10%;
   width: 22%;
   height: 26%;
@@ -344,7 +385,6 @@ select {
 }
 
 .train-aisle {
-  position: absolute;
   left: 35%;
   right: 35%;
   bottom: 0;
@@ -355,7 +395,6 @@ select {
 }
 
 .body-shadow {
-  position: absolute;
   left: 52%;
   top: 61%;
   width: 19%;
@@ -367,7 +406,6 @@ select {
 }
 
 .body-outline {
-  position: absolute;
   left: 52%;
   top: 56%;
   width: 16%;
@@ -381,7 +419,6 @@ select {
 }
 
 .npc-silhouette {
-  position: absolute;
   border-radius: 999px 999px 16px 16px;
   background: linear-gradient(180deg, rgba(19, 24, 32, 0.95), rgba(39, 47, 58, 0.82));
   box-shadow: 0 20px 30px rgba(0, 0, 0, 0.2);
@@ -407,32 +444,11 @@ select {
   animation: breathe 4s ease-in-out infinite;
 }
 
-.luggage-case {
-  position: absolute;
-  left: 31%;
-  top: 24%;
-  width: 14%;
-  height: 8%;
-  border-radius: 12px;
-  background: linear-gradient(180deg, #7f5431, #553722);
-  box-shadow: inset 0 -4px 8px rgba(0, 0, 0, 0.22);
-}
-
 .office-grid-light {
-  position: absolute;
   inset: 0;
   background:
     linear-gradient(90deg, transparent 24%, rgba(255, 255, 255, 0.18) 24.3%, transparent 24.8%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 26%);
-}
-
-.office-monitor,
-.office-desk,
-.office-glass-room,
-.office-alert,
-.office-coffee-spill,
-.sticky-note {
-  position: absolute;
 }
 
 .office-monitor {
@@ -540,15 +556,6 @@ select {
   top: 14%;
   transform: rotate(12deg);
   animation-delay: 1.1s;
-}
-
-.banquet-curtain,
-.banquet-chandelier,
-.banquet-light,
-.banquet-table,
-.banquet-moonlight,
-.banquet-sparkle {
-  position: absolute;
 }
 
 .banquet-curtain {
@@ -667,41 +674,147 @@ select {
 
 .hotspot {
   position: absolute;
+  z-index: 2;
+  background: transparent;
+  color: white;
+  border-radius: 0;
+  padding: 0;
+  box-shadow: none;
+  transform: translate(-50%, -50%);
+}
+
+.hotspot-hit {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  border: 2px solid transparent;
+  background: rgba(255, 255, 255, 0);
+  transition: border-color 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
+}
+
+.hotspot-caption {
+  position: absolute;
+  left: 50%;
+  bottom: -44px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 96px;
+  padding: 0.4rem 0.7rem;
+  border-radius: 999px;
+  color: #fff8f0;
+  text-align: center;
+  background: rgba(14, 18, 24, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  backdrop-filter: blur(8px);
+}
+
+.hotspot-caption strong {
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.hotspot-caption small {
+  opacity: 0.78;
+}
+
+.hotspot:hover .hotspot-hit,
+.hotspot.is-selected .hotspot-hit {
+  border-color: rgba(255, 245, 228, 0.9);
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: 0 0 0 6px rgba(255, 245, 228, 0.08);
+}
+
+.scene-midnight-train.has-backdrop .hotspot[data-hotspot-id="conductor"] {
+  width: 10%;
+  height: 46%;
+  border-radius: 26px;
+}
+
+.scene-midnight-train.has-backdrop .hotspot[data-hotspot-id="body"] {
+  width: 26%;
+  height: 20%;
+  border-radius: 40px;
+}
+
+.scene-midnight-train.has-backdrop .hotspot[data-hotspot-id="shadow-figure"] {
+  width: 14%;
+  height: 30%;
+  border-radius: 36px;
+}
+
+.scene-midnight-train.has-backdrop .hotspot-neutral .hotspot-hit {
+  border-color: rgba(158, 214, 255, 0.12);
+}
+
+.scene-midnight-train.has-backdrop .hotspot-danger .hotspot-hit {
+  border-color: rgba(255, 177, 177, 0.12);
+}
+
+.scene-midnight-train.has-backdrop .hotspot-mystery .hotspot-hit {
+  border-color: rgba(199, 184, 255, 0.12);
+}
+
+.scene-midnight-train.has-backdrop .hotspot[data-hotspot-id="body"] .hotspot-caption {
+  bottom: -54px;
+}
+
+.scene-midnight-train.has-backdrop .hotspot[data-hotspot-id="shadow-figure"] .hotspot-caption {
+  bottom: -48px;
+}
+
+.scene-office-dungeon .hotspot,
+.scene-noble-banquet .hotspot,
+.scene-midnight-train:not(.has-backdrop) .hotspot {
   min-width: 110px;
   padding: 0.9rem 0.95rem;
   border-radius: 22px;
-  transform: translate(-50%, -50%);
-  color: white;
-  text-align: left;
-  z-index: 2;
+  background: rgba(14, 18, 24, 0.72);
   box-shadow: 0 18px 34px rgba(0, 0, 0, 0.18);
 }
 
-.hotspot span,
-.hotspot small {
-  display: block;
+.scene-office-dungeon .hotspot .hotspot-hit,
+.scene-noble-banquet .hotspot .hotspot-hit,
+.scene-midnight-train:not(.has-backdrop) .hotspot .hotspot-hit {
+  display: none;
 }
 
-.hotspot small {
-  margin-top: 0.2rem;
-  opacity: 0.82;
+.scene-office-dungeon .hotspot .hotspot-caption,
+.scene-noble-banquet .hotspot .hotspot-caption,
+.scene-midnight-train:not(.has-backdrop) .hotspot .hotspot-caption {
+  position: static;
+  transform: none;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  backdrop-filter: none;
 }
 
-.hotspot-neutral {
+.scene-office-dungeon .hotspot-neutral,
+.scene-noble-banquet .hotspot-neutral,
+.scene-midnight-train:not(.has-backdrop) .hotspot-neutral {
   background: rgba(34, 63, 77, 0.82);
 }
 
-.hotspot-mystery {
+.scene-office-dungeon .hotspot-mystery,
+.scene-noble-banquet .hotspot-mystery,
+.scene-midnight-train:not(.has-backdrop) .hotspot-mystery {
   background: rgba(105, 72, 44, 0.84);
 }
 
-.hotspot-danger {
+.scene-office-dungeon .hotspot-danger,
+.scene-noble-banquet .hotspot-danger,
+.scene-midnight-train:not(.has-backdrop) .hotspot-danger {
   background: rgba(163, 63, 45, 0.9);
 }
 
-.hotspot.is-selected {
+.scene-office-dungeon .hotspot.is-selected,
+.scene-noble-banquet .hotspot.is-selected,
+.scene-midnight-train:not(.has-backdrop) .hotspot.is-selected {
   outline: 2px solid rgba(255, 244, 231, 0.92);
-  transform: translate(-50%, -50%) scale(1.05);
 }
 
 .scene-footer {
@@ -786,16 +899,6 @@ select {
 
 .player-name {
   font-weight: 700;
-}
-
-@keyframes rainSlide {
-  from {
-    transform: translateY(-10%) translateX(-4%);
-  }
-
-  to {
-    transform: translateY(10%) translateX(4%);
-  }
 }
 
 @keyframes swayLamp {
@@ -887,6 +990,22 @@ select {
   }
 }
 
+@keyframes shimmerSweep {
+  0% {
+    transform: translateX(-14%);
+    opacity: 0.38;
+  }
+
+  50% {
+    opacity: 0.6;
+  }
+
+  100% {
+    transform: translateX(14%);
+    opacity: 0.38;
+  }
+}
+
 @media (max-width: 1080px) {
   .grid {
     grid-template-columns: 1fr;
@@ -906,8 +1025,17 @@ select {
     min-height: 320px;
   }
 
-  .hotspot {
-    min-width: 92px;
-    padding: 0.75rem 0.8rem;
+  .scene-midnight-train.has-backdrop .hotspot[data-hotspot-id="conductor"] {
+    width: 14%;
+  }
+
+  .scene-midnight-train.has-backdrop .hotspot[data-hotspot-id="body"] {
+    width: 32%;
+    height: 18%;
+  }
+
+  .scene-midnight-train.has-backdrop .hotspot[data-hotspot-id="shadow-figure"] {
+    width: 18%;
+    height: 24%;
   }
 }

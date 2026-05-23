@@ -79,43 +79,33 @@ function buildSceneObjects(scenarioId: ScenarioId): InteractiveObject[] {
   if (scenarioId === "midnight-train") {
     return [
       {
-        id: "body",
-        name: "尸体",
-        description: "倒在座椅旁，手里似乎攥着一角车票。",
-        status: "无人敢靠近",
-        actions: ["搜查尸体", "检查伤口", "偷看手中的东西"],
-        x: 54,
-        y: 58,
-        accent: "danger"
-      },
-      {
-        id: "window",
-        name: "车窗",
-        description: "玻璃被雨拍得发白，外面几乎什么都看不清。",
-        status: "窗锁松动",
-        actions: ["观察窗外", "砸开车窗", "试着打开窗锁"],
-        x: 83,
-        y: 35,
-        accent: "mystery"
-      },
-      {
         id: "conductor",
         name: "乘务员",
-        description: "表情过于镇定，像在隐瞒什么。",
-        status: "正在安抚乘客",
-        actions: ["盘问乘务员", "观察表情", "偷偷跟踪他"],
-        x: 19,
-        y: 30,
+        description: "站在左侧车门旁，过于镇定，像是早就知道会发生什么。",
+        status: "低着头，不愿和任何人对视",
+        actions: ["盘问乘务员", "观察神情", "偷偷跟着他"],
+        x: 8,
+        y: 54,
         accent: "neutral"
       },
       {
-        id: "luggage",
-        name: "行李架",
-        description: "上面摆着几件无人认领的行李。",
-        status: "有一只皮箱没贴姓名牌",
-        actions: ["检查皮箱", "翻找行李", "记住可疑物品"],
-        x: 38,
-        y: 19,
+        id: "body",
+        name: "尸体",
+        description: "倒在车厢中央，手边散落着纸片和一部手机。",
+        status: "暂时无人敢靠近",
+        actions: ["搜查尸体", "检查伤口", "偷看手边物品"],
+        x: 48,
+        y: 82,
+        accent: "danger"
+      },
+      {
+        id: "shadow-figure",
+        name: "窗外黑影",
+        description: "右侧窗外站着一个模糊身影，像是在隔着玻璃看你们。",
+        status: "一动不动，像在等待什么",
+        actions: ["观察黑影", "敲窗试探", "记录它出现的位置"],
+        x: 84,
+        y: 43,
         accent: "mystery"
       }
     ];
@@ -194,7 +184,7 @@ function getSceneMeta(scenarioId: ScenarioId) {
   if (scenarioId === "midnight-train") {
     return {
       sceneTitle: "暴雨列车车厢",
-      sceneDescription: "昏黄车灯摇晃，尸体倒在过道中央，所有人都在偷偷观察彼此。"
+      sceneDescription: "尸体倒在车厢中央，左门旁的乘务员和右窗外的黑影都像藏着秘密。"
     };
   }
 
@@ -250,7 +240,7 @@ export function buildInitialSceneState(scenarioId: ScenarioId) {
     ...meta,
     clues:
       scenarioId === "midnight-train"
-        ? ["尸体手里攥着车票碎片", "乘务员表现得过于镇定"]
+        ? ["尸体手边散落着纸片和手机", "乘务员与窗外黑影都过于可疑"]
         : scenarioId === "office-dungeon"
           ? ["老板工位电脑还没锁屏", "茶水间有人刚哭过"]
           : ["遗嘱在灯亮起后消失", "露台有人留下新鲜脚印"],
@@ -290,9 +280,10 @@ export function resolveTurn(room: Room, player: Player, content: string) {
   const matchingObject = room.worldState.interactiveObjects.find(
     (item) => content.includes(item.name) || item.actions.some((action) => content.includes(action))
   );
+
   const newClue =
     room.scenarioId === "midnight-train"
-      ? "车厢地板上有拖拽痕迹，说明尸体可能并不是在这里死的。"
+      ? "尸体周围没有多少挣扎痕迹，像是被拖到车厢中央的。"
       : room.scenarioId === "office-dungeon"
         ? "那封未发送邮件的抬头里藏着一个被删除的项目代号。"
         : "宴会名单上多出了一位没人承认邀请过的名字。";
@@ -301,13 +292,13 @@ export function resolveTurn(room: Room, player: Player, content: string) {
     item.id === matchingObject?.id
       ? {
           ...item,
-          status: `刚被 ${player.name} 动过，现在比之前更可疑`
+          status: `刚被 ${player.name} 盯上，现在比之前更可疑`
         }
       : item
   );
 
   return {
-    narration: `${player.name}刚刚选择“${content}”。${outcome}${matchingObject ? ` 你把注意力集中在${matchingObject.name}上。` : ""}${twist}`,
+    narration: `${player.name}刚刚选择“${content}”。${outcome}${matchingObject ? ` 你的注意力现在落在${matchingObject.name}上。` : ""}${twist}`,
     nextLocation:
       room.scenarioId === "midnight-train"
         ? "列车车厢"
