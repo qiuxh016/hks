@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { io, Socket } from "socket.io-client";
 import { Room } from "../../shared/types";
 
@@ -8,12 +8,20 @@ export interface VoteState {
   deadline: number;
 }
 
+export interface ChatMessage {
+  id: string;
+  playerName: string;
+  content: string;
+  createdAt: string;
+}
+
 interface UseSocketOptions {
   roomId: string | null;
   onRoomState: (room: Room) => void;
   onVoteStart: (vote: VoteState) => void;
   onVoteUpdate: (info: { voterName: string; voted: boolean }) => void;
   onVoteResult: (result: { tally: Record<string, number>; winner: string }) => void;
+  onChatMessage?: (msg: ChatMessage) => void;
   onError: (msg: string) => void;
 }
 
@@ -26,44 +34,56 @@ export function createSocket() {
 
 export function useSocket(opts: UseSocketOptions) {
   const socketRef = useRef<Socket | null>(null);
+  const [socket, setSocket] = useState<Socket | null>(null);
 
   useEffect(() => {
-    const socket = createSocket();
-    socketRef.current = socket;
+    const s = createSocket();
+    socketRef.current = s;
+    setSocket(s);
 
-    socket.on("room:state", opts.onRoomState);
-    socket.on("vote:start", opts.onVoteStart);
-    socket.on("vote:update", opts.onVoteUpdate);
-    socket.on("vote:result", opts.onVoteResult);
-    socket.on("error", opts.onError);
+    s.on("room:state", opts.onRoomState);
+    s.on("vote:start", opts.onVoteStart);
+    s.on("vote:update", opts.onVoteUpdate);
+    s.on("vote:result", opts.onVoteResult);
+    s.on("error", opts.onError);
 
-    socket.connect();
+    if (opts.onChatMessage) {
+      s.on("chat:message", opts.onChatMessage);
+    }
+
+    s.connect();
 
     return () => {
-      socket.disconnect();
+      s.disconnect();
     };
     // only mount once
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    const socket = socketRef.current;
-    if (!socket) return;
+    const s = socketRef.current;
+    if (!s) return;
 
     if (opts.roomId) {
-      socket.emit("room:join", opts.roomId);
+      s.emit("room:join", opts.roomId);
     }
 
     return () => {
       if (opts.roomId) {
-        socket.emit("room:leave", opts.roomId);
+        s.emit("room:leave", opts.roomId);
       }
     };
   }, [opts.roomId]);
 
-  function submitVote(roomId: string, playerId: string, choice: string) {
+  const submitVote = useCallback((roomId: string, playerId: string, choice: string) => {
     socketRef.current?.emit("vote:submit", { roomId, playerId, choice });
-  }
+  }, []);
 
-  return { submitVote, socket: socketRef };
+  const sendChatMessage = useCallback((roomId: string, playerName: string, content: string) => {
+    const id = `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    socketRef.current?.emit("chat:message", roomId, { playerName, content, id });
+    return id;
+  }, []);
+
+  return { submitVote, sendChatMessage, socket };
 }

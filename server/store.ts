@@ -180,3 +180,16 @@ export function updateRoom(roomId: string, updater: (room: Room) => void) {
   return room;
 }
 
+// turn lock: prevent concurrent turn processing per room
+const turnLocks = new Set<string>();
+
+export function lockTurn(roomId: string): boolean {
+  if (turnLocks.has(roomId)) return false;
+  turnLocks.add(roomId);
+  return true;
+}
+
+export function unlockTurn(roomId: string) {
+  turnLocks.delete(roomId);
+}
+

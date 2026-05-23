@@ -1,7 +1,9 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import QRCode from "react-qr-code";
 import { createRoom, fetchScenarios, joinRoom, startRoom, submitTurn, toggleReady as apiToggleReady } from "./api";
-import { useSocket, VoteState } from "./useSocket";
+import { ChatMessage, useSocket, VoteState } from "./useSocket";
+import VoiceChat from "./VoiceChat";
+import VoiceInput from "./VoiceInput";
 import { Room, RoomMode, Scenario } from "../../shared/types";
 
 function App() {
@@ -20,12 +22,35 @@ function App() {
   const [showQR, setShowQR] = useState(false);
   const [networkBase, setNetworkBase] = useState("");
   const [fromInvite, setFromInvite] = useState(false);
+  const voiceBaseRef = useRef("");
+  const messageListRef = useRef<HTMLDivElement>(null);
+
+  // auto-scroll to latest message
+  useEffect(() => {
+    if (messageListRef.current) {
+      messageListRef.current.scrollTop = messageListRef.current.scrollHeight;
+    }
+  }, [room?.messages.length]);
 
   // voting state
   const [vote, setVote] = useState<VoteState | null>(null);
   const [voteChoice, setVoteChoice] = useState("");
   const [voteResult, setVoteResult] = useState<{ tally: Record<string, number>; winner: string } | null>(null);
   const [voters, setVoters] = useState<string[]>([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [activeTab, setActiveTab] = useState<"story" | "chat">("story");
+  const [unreadCount, setUnreadCount] = useState(0);
+  const chatListRef = useRef<HTMLDivElement>(null);
+  const chatTabActiveRef = useRef(false);
+
+  // auto-scroll chat + keep ref in sync
+  useEffect(() => {
+    chatTabActiveRef.current = activeTab === "chat";
+    if (activeTab === "chat" && chatListRef.current) {
+      chatListRef.current.scrollTop = chatListRef.current.scrollHeight;
+    }
+  }, [chatMessages.length, activeTab]);
 
   const onRoomState = useCallback((next: Room) => {
     setRoom(next);
@@ -47,16 +72,24 @@ function App() {
     setVote(null);
   }, []);
 
+  const onChatMessage = useCallback((msg: ChatMessage) => {
+    setChatMessages((prev) => [...prev, msg]);
+    if (!chatTabActiveRef.current) {
+      setUnreadCount((prev) => prev + 1);
+    }
+  }, []);
+
   const onError = useCallback((msg: string) => {
     setError(msg);
   }, []);
 
-  const { submitVote } = useSocket({
+  const { submitVote, sendChatMessage, socket } = useSocket({
     roomId: room?.id ?? null,
     onRoomState,
     onVoteStart,
     onVoteUpdate,
     onVoteResult,
+    onChatMessage,
     onError
   });
 
@@ -73,7 +106,7 @@ function App() {
     fetch("/api/health")
       .then((r) => r.json())
       .then((h) => {
-        setNetworkBase(`http://${h.localIP}:5173`);
+        setNetworkBase(`https://${h.localIP}:5173`);
       })
       .catch(() => setNetworkBase(window.location.origin));
 
@@ -206,11 +239,24 @@ function App() {
     }
   }
 
+  function handleChatSubmit(event: FormEvent) {
+    event.preventDefault();
+    if (!room || !chatInput.trim() || !me) return;
+    sendChatMessage(room.id, me.name, chatInput.trim());
+    setChatInput("");
+  }
+
+  function insertEmoji(emoji: string) {
+    setChatInput((prev) => prev + emoji);
+  }
+
   function handleVoteSubmit(event: FormEvent) {
     event.preventDefault();
     if (!room || !voteChoice) return;
     submitVote(room.id, playerId, voteChoice);
   }
+
+  const quickEmojis = ["😀","😂","🤣","😍","🤔","😎","👍","👎","🎉","❤️","🔥","💀","👀","🎲","🐉","⚔️","🛡️","🗡️","🏰","🌙","✨","💬"];
 
   const me = room?.players.find((player) => player.id === playerId);
   const amHost = room?.hostPlayerId === playerId;
@@ -368,6 +414,15 @@ function App() {
             </div>
           )}
 
+          {/* Voice Chat */}
+          {room && me && (
+            <VoiceChat
+              socket={socket}
+              roomId={room.id}
+              playerName={me.name}
+            />
+          )}
+
           {/* Voting UI */}
           {vote && room && (
             <div className="panel vote-panel">
@@ -418,37 +473,124 @@ function App() {
 
         <section className="panel story-panel">
           <div className="panel-header">
-            <h2>故事流</h2>
-            <span>自由输入比按钮更重要</span>
+            <div className="tab-bar">
+              <button
+                type="button"
+                className={`tab-btn ${activeTab === "story" ? "is-active" : ""}`}
+                onClick={() => setActiveTab("story")}
+              >
+                故事流
+              </button>
+              <button
+                type="button"
+                className={`tab-btn ${activeTab === "chat" ? "is-active" : ""}`}
+                onClick={() => { setActiveTab("chat"); setUnreadCount(0); }}
+              >
+                交流区
+                {unreadCount > 0 && (
+                  <span className="chat-badge">{unreadCount}</span>
+                )}
+              </button>
+            </div>
+            <span>{activeTab === "story" ? "自由输入比按钮更重要" : "自由聊天，不影响剧情"}</span>
           </div>
 
-          <div className="message-list">
-            {room?.messages.map((message) => (
-              <article key={message.id} className={`message message-${message.type}`}>
-                <p className="message-speaker">{message.speaker}</p>
-                <p>{message.content}</p>
-              </article>
-            ))}
+          {activeTab === "story" && (
+            <>
+              <div className="message-list" ref={messageListRef}>
+                {room?.messages.map((message) => (
+                  <article key={message.id} className={`message message-${message.type}`}>
+                    <p className="message-speaker">{message.speaker}</p>
+                    <p>{message.content}</p>
+                  </article>
+                ))}
 
-            {!room && (
-              <div className="empty-state">
-                <p>先创建或加入一个房间。</p>
-                <p>这版重点是把多人剧本流程跑通，不先卷复杂战斗系统。</p>
+                {room && room.messages.length > 0 && room.messages[room.messages.length - 1].type === "player" && (
+                  <article className="message message-ai">
+                    <p className="message-speaker">AI DM</p>
+                    <p className="thinking-dots">思考中<span>.</span><span>.</span><span>.</span></p>
+                  </article>
+                )}
+
+                {!room && (
+                  <div className="empty-state">
+                    <p>先创建或加入一个房间。</p>
+                    <p>这版重点是把多人剧本流程跑通，不先卷复杂战斗系统。</p>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
 
-          <form onSubmit={handleSubmitTurn} className="action-bar">
-            <input
-              placeholder="输入你的行动，例如：我偷走地图 / 我观察谁最紧张"
-              value={action}
-              onChange={(event) => setAction(event.target.value)}
-              disabled={room?.status !== "in_progress"}
-            />
-            <button type="submit" disabled={loading || room?.status !== "in_progress"}>
-              执行
-            </button>
-          </form>
+              <form onSubmit={handleSubmitTurn} className="action-bar">
+                <input
+                  placeholder="输入你的行动，例如：我偷走地图 / 我观察谁最紧张"
+                  value={action}
+                  onChange={(event) => setAction(event.target.value)}
+                  disabled={room?.status !== "in_progress"}
+                />
+                <VoiceInput
+                  onResult={(text) => {
+                    voiceBaseRef.current = "";
+                    setAction((prev) => prev ? `${prev} ${text}` : text);
+                  }}
+                  onInterim={(text) => {
+                    setAction((prev) => {
+                      const base = voiceBaseRef.current ?? "";
+                      return base ? `${base} ${text}` : text;
+                    });
+                    voiceBaseRef.current = voiceBaseRef.current || prev;
+                  }}
+                  disabled={room?.status !== "in_progress"}
+                />
+                <button type="submit" disabled={loading || room?.status !== "in_progress"}>
+                  {loading ? "DM 回应中..." : "执行"}
+                </button>
+              </form>
+            </>
+          )}
+
+          {activeTab === "chat" && (
+            <>
+              <div className="message-list chat-list" ref={chatListRef}>
+                {chatMessages.length === 0 && (
+                  <div className="empty-state" style={{ minHeight: 120 }}>
+                    <p>还没有聊天消息。</p>
+                    <p>在这里和其他玩家自由交流、讨论策略！</p>
+                  </div>
+                )}
+                {chatMessages.map((msg) => (
+                  <article key={msg.id} className={`chat-bubble ${msg.playerName === me?.name ? "is-self" : ""}`}>
+                    <p className="chat-sender">{msg.playerName}</p>
+                    <p className="chat-text">{msg.content}</p>
+                  </article>
+                ))}
+              </div>
+
+              <div className="emoji-bar">
+                {quickEmojis.map((emoji) => (
+                  <button
+                    key={emoji}
+                    type="button"
+                    className="emoji-btn"
+                    onClick={() => insertEmoji(emoji)}
+                  >
+                    {emoji}
+                  </button>
+                ))}
+              </div>
+
+              <form onSubmit={handleChatSubmit} className="action-bar">
+                <input
+                  placeholder="输入聊天消息..."
+                  value={chatInput}
+                  onChange={(event) => setChatInput(event.target.value)}
+                  disabled={!room}
+                />
+                <button type="submit" disabled={!room || !chatInput.trim()}>
+                  发送
+                </button>
+              </form>
+            </>
+          )}
         </section>
 
         <aside className="panel roster-panel">

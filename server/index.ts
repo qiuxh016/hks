@@ -17,7 +17,9 @@ import {
   createRoom,
   getRoom,
   joinRoom,
+  lockTurn,
   toggleReady,
+  unlockTurn,
   updateRoom
 } from "./store";
 
@@ -166,6 +168,27 @@ io.on("connection", (socket) => {
     if (allVoted) {
       finalizeVote(payload.roomId);
     }
+  });
+
+  // ----- voice relay -----
+  socket.on("voice:start", (roomId: string, playerName: string) => {
+    socket.broadcast.to(roomId).emit("voice:start", playerName);
+  });
+
+  socket.on("voice:data", (roomId: string, chunk: ArrayBuffer) => {
+    socket.broadcast.to(roomId).emit("voice:data", chunk);
+  });
+
+  socket.on("voice:end", (roomId: string, playerName: string) => {
+    socket.broadcast.to(roomId).emit("voice:end", playerName);
+  });
+
+  // ----- chat relay -----
+  socket.on("chat:message", (roomId: string, payload: { playerName: string; content: string; id: string }) => {
+    io.to(roomId).emit("chat:message", {
+      ...payload,
+      createdAt: new Date().toISOString()
+    });
   });
 
   socket.on("disconnect", () => {
@@ -363,39 +386,49 @@ app.post("/api/rooms/:roomId/turn", async (req, res) => {
       return res.status(400).json({ error: "行动内容不能为空" });
     }
 
-    appendMessages(room.id, [
-      {
-        type: "player",
-        speaker: player.name,
-        content: body.content.trim(),
-        playerId: player.id
-      }
-    ]);
-
-    const dmResult = await resolveTurn(room, player, body.content.trim());
-
-    updateRoom(room.id, (draft) => {
-      draft.worldState.round += 1;
-      draft.worldState.tension = Math.min(10, draft.worldState.tension + 1);
-      draft.worldState.currentLocation = dmResult.nextLocation;
-    });
-
-    appendMessages(room.id, [
-      {
-        type: "ai",
-        speaker: "AI DM",
-        content: dmResult.narration
-      }
-    ]);
-
-    // trigger vote every 3 rounds
-    if (room.worldState.round % 3 === 0 && !activeVotes.has(room.id)) {
-      triggerVote(room.id);
+    if (!lockTurn(room.id)) {
+      return res.status(409).json({ error: "DM 正在回应上一个行动，请稍后再试" });
     }
 
-    broadcastRoom(req.params.roomId);
+    try {
+      appendMessages(room.id, [
+        {
+          type: "player",
+          speaker: player.name,
+          content: body.content.trim(),
+          playerId: player.id
+        }
+      ]);
 
-    return res.json(room);
+      broadcastRoom(req.params.roomId);
+
+      const dmResult = await resolveTurn(room, player, body.content.trim());
+
+      updateRoom(room.id, (draft) => {
+        draft.worldState.round += 1;
+        draft.worldState.tension = Math.min(10, draft.worldState.tension + 1);
+        draft.worldState.currentLocation = dmResult.nextLocation;
+      });
+
+      appendMessages(room.id, [
+        {
+          type: "ai",
+          speaker: "AI DM",
+          content: dmResult.narration
+        }
+      ]);
+
+      // trigger vote every 3 rounds
+      if (room.worldState.round % 3 === 0 && !activeVotes.has(room.id)) {
+        triggerVote(room.id);
+      }
+
+      broadcastRoom(req.params.roomId);
+
+      return res.json(room);
+    } finally {
+      unlockTurn(room.id);
+    }
   } catch (error) {
     return res.status(400).json({
       error: error instanceof Error ? error.message : "提交行动失败"
