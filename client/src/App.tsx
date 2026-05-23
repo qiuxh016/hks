@@ -4,7 +4,8 @@ import { createRoom, fetchRoom, fetchScenarios, joinRoom, startRoom, submitTurn 
 
 const sceneBackdropMap: Partial<Record<Scenario["id"], string>> = {
   "midnight-train": new URL("../../image/ChatGPT Image 2026年5月23日 14_17_27 (1).png", import.meta.url).href,
-  "office-dungeon": new URL("../../image/d6584dab-e2e7-49ab-a5b6-a1141afe205c.png", import.meta.url).href
+  "office-dungeon": new URL("../../image/d6584dab-e2e7-49ab-a5b6-a1141afe205c.png", import.meta.url).href,
+  "noble-banquet": new URL("../../image/2a8a9631-b205-41fa-a339-654e65eb2821.png", import.meta.url).href
 };
 
 const sceneDetailMap: Partial<Record<Scenario["id"], Partial<Record<string, string>>>> = {
@@ -17,6 +18,12 @@ const sceneDetailMap: Partial<Record<Scenario["id"], Partial<Record<string, stri
     "meeting-room": new URL("../../image/43178a45-1d7f-4e35-b720-8fbf2c6be8a5.png", import.meta.url).href,
     pantry: new URL("../../image/c29c4822-cbc3-4171-b421-8bf1386ea24b.png", import.meta.url).href,
     "boss-desk": new URL("../../image/45a368af-02b4-44f9-8988-da0f767d01dd.png", import.meta.url).href
+  },
+  "noble-banquet": {
+    chandelier: new URL("../../image/4d63d793-24a6-46ec-98ce-d5731fb9e6e2.png", import.meta.url).href,
+    stage: new URL("../../image/b53af1b4-5be0-4313-8d70-cd952b8ebde5.png", import.meta.url).href,
+    "duke-seat": new URL("../../image/5ee83649-f18d-42b6-8308-f68948c3b830.png", import.meta.url).href,
+    "balcony-trail": new URL("../../image/27bc414a-c235-489b-8d31-1d414e266be8.png", import.meta.url).href
   }
 };
 
@@ -69,6 +76,10 @@ function renderSceneIllustration(scenarioId?: Scenario["id"], hasBackdrop?: bool
   }
 
   if (scenarioId === "noble-banquet") {
+    if (hasBackdrop) {
+      return <div className="backdrop-shimmer" aria-hidden="true" />;
+    }
+
     return (
       <>
         <div className="banquet-curtain curtain-left" aria-hidden="true" />
