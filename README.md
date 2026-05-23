@@ -40,6 +40,14 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 
 如果缺少 `DEEPSEEK_API_KEY`，`/api/rooms/:roomId/turn` 会直接报错提示配置。
 
+## 背景音乐 BGM
+
+使用项目根目录的 `main.mp3`（仅支持 mp3）。
+
+1. 确保根目录存在 `main.mp3`
+2. 首次或更换音乐后执行：`copy main.mp3 client\public\bgm\main.mp3`
+3. 启动后在前端顶部点击 **播放 BGM**
+
 ## 当前接口
 
 - `GET /api/health`

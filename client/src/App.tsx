@@ -18,6 +18,7 @@ import {
   getCurrentTurnPlayer,
   getTurnPhaseLabel
 } from "../../shared/types";
+import { BgmPlayer } from "./components/BgmPlayer";
 import { loadPlayerSession, resolvePlayerId, savePlayerSession } from "./session";
 
 function App() {
@@ -278,6 +279,7 @@ function App() {
             每轮真人先依次输入指令，再由 DeepSeek 驱动的 AI 机器人依次行动。
           </p>
         )}
+        <BgmPlayer />
       </section>
 
       <section className="grid">
