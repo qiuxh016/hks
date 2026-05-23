@@ -19,6 +19,7 @@ import {
   appendMessages,
   applyBotDisplayNames,
   assignRoleCards,
+  countHumanPlayers,
   createRoom,
   dedupeHumanPlayers,
   fillBotPlayers,
@@ -27,6 +28,7 @@ import {
   joinRoom,
   replaceSceneObjects,
   setProcessingTurn,
+  togglePlayerReady,
   updateRoom,
   updateRoomMaxPlayers
 } from "./store";
@@ -254,7 +256,7 @@ app.post("/api/rooms", (req, res) => {
     return res.status(400).json({ error: "缺少 hostName 或 scenarioId" });
   }
 
-  const session = createRoom(body.hostName.trim(), body.scenarioId, body.maxPlayers);
+  const session = createRoom(body.hostName.trim(), body.scenarioId, body.maxPlayers, body.mode);
   return res.status(201).json(session);
 });
 
@@ -276,6 +278,23 @@ app.patch("/api/rooms/:roomId/settings", (req, res) => {
   } catch (error) {
     return res.status(400).json({
       error: error instanceof Error ? error.message : "更新房间设置失败"
+    });
+  }
+});
+
+app.patch("/api/rooms/:roomId/ready", (req, res) => {
+  try {
+    const body = req.body as { playerId: string };
+    if (!body.playerId) {
+      return res.status(400).json({ error: "缺少 playerId" });
+    }
+
+    const room = togglePlayerReady(req.params.roomId, body.playerId);
+    broadcastRoom(req.params.roomId);
+    return res.json(room);
+  } catch (error) {
+    return res.status(400).json({
+      error: error instanceof Error ? error.message : "准备状态切换失败"
     });
   }
 });
@@ -317,6 +336,15 @@ app.post("/api/rooms/:roomId/start", async (req, res) => {
 
     if (room.status !== "lobby") {
       return res.status(400).json({ error: "游戏已经开始" });
+    }
+
+    const notReady = room.players.filter(
+      (p) => p.kind === "human" && !p.ready
+    );
+    if (notReady.length > 0) {
+      return res.status(400).json({
+        error: `以下玩家尚未准备：${notReady.map((p) => p.name).join("、")}`
+      });
     }
 
     dedupeHumanPlayers(room);

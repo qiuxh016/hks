@@ -63,6 +63,7 @@ function clampMaxPlayers(value: number) {
 
 function ensurePlayer(player: Player): Player {
   if (player.kind === "bot") {
+    player.ready = player.ready ?? true;
     return player;
   }
 
@@ -70,6 +71,7 @@ function ensurePlayer(player: Player): Player {
     player.kind = "human";
   }
 
+  player.ready = player.ready ?? (player.isHost ? true : false);
   return player;
 }
 
@@ -147,7 +149,7 @@ export function countHumanPlayers(room: Room) {
   return room.players.filter((player) => player.kind === "human").length;
 }
 
-export function createRoom(hostName: string, scenarioId: ScenarioId, maxPlayers = 3) {
+export function createRoom(hostName: string, scenarioId: ScenarioId, maxPlayers = 3, mode: Room["mode"] = "multi") {
   const roomId = createId("room");
   const hostPlayerId = createId("player");
   const capped = clampMaxPlayers(maxPlayers);
@@ -155,14 +157,15 @@ export function createRoom(hostName: string, scenarioId: ScenarioId, maxPlayers 
     id: hostPlayerId,
     name: hostName,
     isHost: true,
-    kind: "human"
+    kind: "human",
+    ready: true
   };
 
   const room: Room = {
     id: roomId,
     scenarioId,
     status: "lobby",
-    mode: "multi",
+    mode,
     hostPlayerId,
     maxPlayers: capped,
     turnPhase: "human",
@@ -248,7 +251,8 @@ export function joinRoom(roomId: string, playerName: string) {
     id: playerId,
     name: trimmedName,
     isHost: false,
-    kind: "human"
+    kind: "human",
+    ready: false
   };
 
   room.players.push(player);
@@ -261,6 +265,45 @@ export function joinRoom(roomId: string, playerName: string) {
   );
 
   return { room, playerId };
+}
+
+export function togglePlayerReady(roomId: string, playerId: string) {
+  const room = rooms.get(roomId);
+
+  if (!room) {
+    throw new Error("房间不存在");
+  }
+
+  if (room.status !== "lobby") {
+    throw new Error("游戏已开始");
+  }
+
+  const player = room.players.find((p) => p.id === playerId);
+  if (!player) {
+    throw new Error("玩家不存在");
+  }
+
+  if (player.kind !== "human") {
+    throw new Error("AI 机器人不需要准备");
+  }
+
+  if (player.isHost) {
+    throw new Error("房主默认已准备");
+  }
+
+  player.ready = !player.ready;
+
+  const readyCount = room.players.filter((p) => p.kind === "human" && p.ready).length;
+  const humanCount = countHumanPlayers(room);
+  room.messages.push(
+    createMessage({
+      type: "system",
+      speaker: "系统",
+      content: `${player.name} ${player.ready ? "已准备" : "取消准备"}（${readyCount}/${humanCount} 真人已准备）。`
+    })
+  );
+
+  return room;
 }
 
 export function fillBotPlayers(room: Room) {
@@ -277,7 +320,8 @@ export function fillBotPlayers(room: Room) {
       id: createId("player"),
       name: formatBotName(botIndex, "待定"),
       isHost: false,
-      kind: "bot"
+      kind: "bot",
+      ready: true
     });
     botIndex += 1;
   }

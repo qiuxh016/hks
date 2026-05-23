@@ -56,6 +56,13 @@ export function updateRoomSettings(
   });
 }
 
+export function toggleReady(roomId: string, playerId: string) {
+  return request<Room>(`/api/rooms/${roomId}/ready`, {
+    method: "PATCH",
+    body: JSON.stringify({ playerId })
+  });
+}
+
 export function startRoom(roomId: string) {
   return request<Room>(`/api/rooms/${roomId}/start`, {
     method: "POST"

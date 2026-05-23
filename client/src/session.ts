@@ -25,6 +25,10 @@ export function loadPlayerSession(): PlayerSession | null {
   }
 }
 
+export function clearPlayerSession() {
+  localStorage.removeItem(STORAGE_KEY);
+}
+
 export function resolvePlayerId(room: Room, preferredId: string, preferredName: string) {
   if (preferredId && room.players.some((player) => player.id === preferredId)) {
     return preferredId;

@@ -8,6 +8,7 @@ import {
   joinRoom,
   startRoom,
   submitTurn,
+  toggleReady,
   updateRoomSettings
 } from "./api";
 import {
@@ -21,7 +22,7 @@ import {
   getTurnPhaseLabel
 } from "../../shared/types";
 import { BgmPlayer } from "./components/BgmPlayer";
-import { loadPlayerSession, resolvePlayerId, savePlayerSession } from "./session";
+import { clearPlayerSession, loadPlayerSession, resolvePlayerId, savePlayerSession } from "./session";
 import { ChatMessage, useSocket, VoteState } from "./useSocket";
 import SceneRenderer from "./SceneRenderer";
 import VoiceChat from "./VoiceChat";
@@ -49,7 +50,7 @@ function App() {
   // invite + QR
   const [inviteCopied, setInviteCopied] = useState(false);
   const [showQR, setShowQR] = useState(false);
-  const [networkBase, setNetworkBase] = useState("");
+  const [networkBase, setNetworkBase] = useState(window.location.origin);
   const voiceBaseRef = useRef("");
   const [fromInvite, setFromInvite] = useState(false);
 
@@ -94,8 +95,13 @@ function App() {
     setFocusedSceneObjectId("");
   }, [room?.scenarioId]);
 
-  // session restore
+  // session restore (skip if arriving via invite link)
   useEffect(() => {
+    const inviteRoomId = new URLSearchParams(window.location.search).get("room");
+    if (inviteRoomId) {
+      return; // invite link takes priority over saved session
+    }
+
     const session = loadPlayerSession();
     if (!session) {
       return;
@@ -164,8 +170,7 @@ function App() {
       .then((r) => r.json())
       .then((h) => {
         if (h.localIP) {
-          const port = window.location.port || "5173";
-          setNetworkBase(`https://${h.localIP}:${port}`);
+          setNetworkBase(`https://${h.localIP}:${window.location.port}`);
         }
       })
       .catch(() => setNetworkBase(window.location.origin));
@@ -257,9 +262,12 @@ function App() {
   );
   const humanCount = room?.players.filter((player) => player.kind === "human").length ?? 0;
   const amHost = room?.hostPlayerId === activePlayerId;
+  const allHumansReady = room
+    ? room.players.filter((p) => p.kind === "human").every((p) => p.ready)
+    : false;
 
   const inviteUrl = room
-    ? `${networkBase || window.location.origin}?room=${room.id}`
+    ? `${networkBase}?room=${room.id}`
     : "";
 
   function handleCopyInvite() {
@@ -360,6 +368,26 @@ function App() {
       setError(err instanceof Error ? err.message : "加入失败");
     } finally {
       setLoading(false);
+    }
+  }
+
+  function handleExitGame() {
+    clearPlayerSession();
+    setRoom(null);
+    setPlayerId("");
+    setMyPlayerName("");
+    setRoomCode("");
+    setError("");
+  }
+
+  async function handleToggleReady() {
+    if (!room) return;
+
+    try {
+      const updated = await toggleReady(room.id, activePlayerId);
+      setRoom(updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "操作失败");
     }
   }
 
@@ -614,7 +642,7 @@ function App() {
                 </div>
               )}
 
-              {room.status === "lobby" && (
+              {room.status === "lobby" && room.mode === "multi" && (
                 <>
                   <label style={{ marginTop: 14, display: "block" }}>
                     房间人数（含 AI 补位）
@@ -634,39 +662,81 @@ function App() {
                     </select>
                   </label>
 
-                  <button onClick={handleStart} disabled={loading || starting || aiMode !== "ai-ready"}>
-                    {starting ? "AI 撰写开场…" : "开始游戏"}
-                  </button>
+                  {amHost && !allHumansReady && (
+                    <p className="muted" style={{ marginTop: 8, color: "#f0a040" }}>
+                      等待所有玩家准备…
+                    </p>
+                  )}
+                  {amHost && (
+                    <button
+                      onClick={handleStart}
+                      disabled={loading || starting || aiMode !== "ai-ready" || !allHumansReady}
+                    >
+                      {starting ? "AI 撰写开场…" : allHumansReady ? "开始游戏" : "等待玩家准备"}
+                    </button>
+                  )}
+                  {!amHost && (
+                    <button
+                      onClick={() => void handleToggleReady()}
+                      disabled={loading}
+                      style={{
+                        background: me?.ready
+                          ? "linear-gradient(120deg, #3a5a3a, #2a4a2a)"
+                          : "linear-gradient(120deg, #4a7a4a, #3a6a3a)"
+                      }}
+                    >
+                      {me?.ready ? "已准备 ✓" : "准备"}
+                    </button>
+                  )}
                 </>
               )}
 
-              {room.status === "lobby" && (
+              {room.status === "lobby" && room.mode === "multi" && (
                 <div className="invite-section">
-                  <button onClick={handleCopyInvite} className="btn-invite">
-                    {inviteCopied ? "已复制！" : "复制邀请链接"}
-                  </button>
-                  <button
-                    onClick={() => setShowQR(!showQR)}
-                    className="btn-invite"
-                    style={{ marginTop: 8, background: "linear-gradient(120deg, #555, #333)" }}
-                  >
-                    {showQR ? "收起二维码" : "显示二维码"}
-                  </button>
-                  {showQR && (
-                    <div className="qr-wrap">
-                      <QRCode value={inviteUrl} size={140} />
-                      <p className="muted" style={{ fontSize: "0.7rem", marginTop: 6 }}>
-                        扫描二维码加入房间
-                      </p>
-                    </div>
+                  {amHost && (
+                    <>
+                      <button onClick={handleCopyInvite} className="btn-invite">
+                        {inviteCopied ? "已复制！" : "复制邀请链接"}
+                      </button>
+                      <button
+                        onClick={() => setShowQR(!showQR)}
+                        className="btn-invite"
+                        style={{ marginTop: 8, background: "linear-gradient(120deg, #555, #333)" }}
+                      >
+                        {showQR ? "收起二维码" : "显示二维码"}
+                      </button>
+                      {showQR && (
+                        <div className="qr-wrap">
+                          <QRCode value={inviteUrl} size={140} />
+                          <p className="muted" style={{ fontSize: "0.7rem", marginTop: 6 }}>
+                            扫描二维码加入房间
+                          </p>
+                        </div>
+                      )}
+                    </>
                   )}
                   {room.players.length > 0 && (
-                    <p className="muted" style={{ fontSize: "0.75rem", marginTop: "0.25rem" }}>
-                      等待中：{room.players.map((p) => p.name).join("、")}
-                    </p>
+                    <ul className="player-ready-list" style={{ fontSize: "0.8rem", marginTop: 8, listStyle: "none", padding: 0 }}>
+                      {room.players.filter((p) => p.kind === "human").map((p) => (
+                        <li key={p.id} style={{ padding: "2px 0" }}>
+                          {p.ready ? "✅" : "⏳"} {p.name} {p.isHost ? "(房主)" : ""} {p.ready ? "已准备" : "未准备"}
+                        </li>
+                      ))}
+                    </ul>
                   )}
                 </div>
               )}
+
+              <button
+                onClick={handleExitGame}
+                style={{
+                  marginTop: 16,
+                  background: "linear-gradient(120deg, #6b2f2f, #4a1e1e)",
+                  border: "1px solid #8b3a3a"
+                }}
+              >
+                退出游戏
+              </button>
             </div>
           )}
 
@@ -875,12 +945,13 @@ function App() {
                 ))}
               </div>
 
-              <form onSubmit={handleChatSubmit} className="action-bar">
+              <form onSubmit={handleChatSubmit} className="action-bar chat-action-bar">
                 <input
                   placeholder="输入聊天消息..."
                   value={chatInput}
                   onChange={(event) => setChatInput(event.target.value)}
                   disabled={!room}
+                  className="chat-input"
                 />
                 <button type="submit" disabled={!room || !chatInput.trim()}>
                   发送

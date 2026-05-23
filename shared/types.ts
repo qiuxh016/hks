@@ -30,6 +30,7 @@ export interface Player {
   name: string;
   isHost: boolean;
   kind: PlayerKind;
+  ready: boolean;
   roleCard?: RoleCard;
 }
 
