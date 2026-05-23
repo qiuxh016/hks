@@ -116,32 +116,32 @@ function buildSceneObjects(scenarioId: ScenarioId): InteractiveObject[] {
       {
         id: "meeting-room",
         name: "会议室",
-        description: "玻璃门后坐着几位脸色发青的同事。",
-        status: "里面正传出 KPI 争吵声",
+        description: "玻璃门后坐着几位脸色发青的同事，桌上散落着还没收走的方案纸。",
+        status: "会议暂停，但里面像刚爆发过激烈争执",
         actions: ["偷听会议", "闯进会议室", "寻找会议纪要"],
-        x: 66,
-        y: 27,
+        x: 23,
+        y: 47,
         accent: "mystery"
-      },
-      {
-        id: "boss-desk",
-        name: "老板工位",
-        description: "空着，但电脑屏幕还亮着。",
-        status: "有一封未发送邮件",
-        actions: ["查看电脑", "搜老板抽屉", "拍下邮件内容"],
-        x: 80,
-        y: 64,
-        accent: "danger"
       },
       {
         id: "pantry",
         name: "茶水间",
-        description: "咖啡机坏了，气氛像事故现场。",
-        status: "有人刚在这里哭过",
-        actions: ["安抚同事", "寻找痕迹", "偷听八卦"],
-        x: 24,
-        y: 66,
+        description: "台面凌乱，咖啡渍还没干，像刚有人情绪崩溃过。",
+        status: "咖啡机还热着，墙上贴着可疑便签",
+        actions: ["安抚同事", "寻找痕迹", "翻看便签"],
+        x: 48,
+        y: 33,
         accent: "neutral"
+      },
+      {
+        id: "boss-desk",
+        name: "老板工位",
+        description: "电脑亮着，台灯也没关，像是主人刚匆忙离开。",
+        status: "有一封未发送邮件，时间停在 23:47",
+        actions: ["查看电脑", "搜老板抽屉", "拍下邮件内容"],
+        x: 75,
+        y: 46,
+        accent: "danger"
       }
     ];
   }
@@ -191,7 +191,7 @@ function getSceneMeta(scenarioId: ScenarioId) {
   if (scenarioId === "office-dungeon") {
     return {
       sceneTitle: "失控办公区",
-      sceneDescription: "荧光灯闪烁，会议通知像诅咒一样不断弹出，空气里满是甩锅前兆。"
+      sceneDescription: "会议室、茶水间和老板工位三处都像刚发生过什么，整层楼弥漫着压抑的加班气味。"
     };
   }
 
@@ -242,7 +242,7 @@ export function buildInitialSceneState(scenarioId: ScenarioId) {
       scenarioId === "midnight-train"
         ? ["尸体手边散落着纸片和手机", "乘务员与窗外黑影都过于可疑"]
         : scenarioId === "office-dungeon"
-          ? ["老板工位电脑还没锁屏", "茶水间有人刚哭过"]
+          ? ["会议室像刚临时中断", "茶水间和老板工位都留着加班痕迹"]
           : ["遗嘱在灯亮起后消失", "露台有人留下新鲜脚印"],
     interactiveObjects: buildSceneObjects(scenarioId)
   };
@@ -285,7 +285,7 @@ export function resolveTurn(room: Room, player: Player, content: string) {
     room.scenarioId === "midnight-train"
       ? "尸体周围没有多少挣扎痕迹，像是被拖到车厢中央的。"
       : room.scenarioId === "office-dungeon"
-        ? "那封未发送邮件的抬头里藏着一个被删除的项目代号。"
+        ? "23:47 之前，老板工位和会议室之间一定有人匆忙来回过。"
         : "宴会名单上多出了一位没人承认邀请过的名字。";
 
   const interactiveObjects = room.worldState.interactiveObjects.map((item) =>

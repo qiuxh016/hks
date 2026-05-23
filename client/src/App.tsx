@@ -3,7 +3,8 @@ import { InteractiveObject, Room, Scenario } from "../../shared/types";
 import { createRoom, fetchRoom, fetchScenarios, joinRoom, startRoom, submitTurn } from "./api";
 
 const sceneBackdropMap: Partial<Record<Scenario["id"], string>> = {
-  "midnight-train": new URL("../../image/ChatGPT Image 2026年5月23日 14_17_27 (1).png", import.meta.url).href
+  "midnight-train": new URL("../../image/ChatGPT Image 2026年5月23日 14_17_27 (1).png", import.meta.url).href,
+  "office-dungeon": new URL("../../image/d6584dab-e2e7-49ab-a5b6-a1141afe205c.png", import.meta.url).href
 };
 
 const sceneDetailMap: Partial<Record<Scenario["id"], Partial<Record<string, string>>>> = {
@@ -11,6 +12,11 @@ const sceneDetailMap: Partial<Record<Scenario["id"], Partial<Record<string, stri
     conductor: new URL("../../image/Snipaste_2026-05-23_14-35-31.png", import.meta.url).href,
     body: new URL("../../image/dc76d1cb-3f10-4425-b740-77c518edcabd.png", import.meta.url).href,
     "shadow-figure": new URL("../../image/1c9a80d8-de3e-4dc3-9820-8c2f31228624.png", import.meta.url).href
+  },
+  "office-dungeon": {
+    "meeting-room": new URL("../../image/43178a45-1d7f-4e35-b720-8fbf2c6be8a5.png", import.meta.url).href,
+    pantry: new URL("../../image/c29c4822-cbc3-4171-b421-8bf1386ea24b.png", import.meta.url).href,
+    "boss-desk": new URL("../../image/45a368af-02b4-44f9-8988-da0f767d01dd.png", import.meta.url).href
   }
 };
 
@@ -40,6 +46,10 @@ function renderSceneIllustration(scenarioId?: Scenario["id"], hasBackdrop?: bool
   }
 
   if (scenarioId === "office-dungeon") {
+    if (hasBackdrop) {
+      return <div className="backdrop-shimmer" aria-hidden="true" />;
+    }
+
     return (
       <>
         <div className="office-grid-light" aria-hidden="true" />
@@ -247,10 +257,7 @@ function App() {
             activeScenarioId === "midnight-train" && focusedSceneObjectId === "conductor"
               ? "center 18%"
               : "center",
-          backgroundSize:
-            activeScenarioId === "midnight-train" && focusedSceneObjectId === "conductor"
-              ? "cover"
-              : "cover",
+          backgroundSize: "cover",
           backgroundRepeat: "no-repeat"
         }
       : sceneBackdrop
@@ -270,7 +277,7 @@ function App() {
         <p className="eyebrow">AI Improvised Adventure</p>
         <h1>AI 地下城</h1>
         <p className="hero-copy">
-          现在点主场景里的乘务员、尸体或窗外黑影后，画面会直接切到对应特写图，再从特写里回到整节车厢。
+          现在办公区剧本也会像列车一样，先看全景，点会议室、茶水间或老板工位后切到对应特写，再回到全景继续推进剧情。
         </p>
       </section>
 
@@ -373,7 +380,7 @@ function App() {
                     className="scene-back-button"
                     onClick={() => setFocusedSceneObjectId("")}
                   >
-                    返回车厢
+                    返回全景
                   </button>
                 </div>
               ) : null}
@@ -411,7 +418,7 @@ function App() {
                 ) : (
                   <>
                     <p className="eyebrow">Selected</p>
-                    <h4>点击一个场景人物</h4>
+                    <h4>点击一个场景对象</h4>
                     <p>点击后会优先切到这张人物或线索的特写图，再决定下一步操作。</p>
                   </>
                 )}
@@ -447,14 +454,14 @@ function App() {
             {!room && (
               <div className="empty-state">
                 <p>先创建或加入一个房间。</p>
-                <p>这版重点是把“点场景人物、看特写、继续互动”这条链路做顺。</p>
+                <p>这版重点是把“点场景对象、看特写、继续互动”这条链路做顺。</p>
               </div>
             )}
           </div>
 
           <form onSubmit={handleSubmitTurn} className="action-bar">
             <input
-              placeholder="输入你的行动，例如：我搜查尸体 / 我盘问乘务员 / 我观察窗外黑影"
+              placeholder="输入你的行动，例如：我偷听会议 / 我去茶水间翻找痕迹 / 我查看老板电脑"
               value={action}
               onChange={(event) => setAction(event.target.value)}
               disabled={room?.status !== "in_progress"}
