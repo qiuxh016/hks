@@ -1,6 +1,69 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, ReactNode, useEffect, useState } from "react";
+import { InteractiveObject, Room, Scenario } from "../../shared/types";
 import { createRoom, fetchRoom, fetchScenarios, joinRoom, startRoom, submitTurn } from "./api";
-import { Room, Scenario } from "../../shared/types";
+
+function renderSceneIllustration(scenarioId?: Scenario["id"]): ReactNode {
+  if (scenarioId === "midnight-train") {
+    return (
+      <>
+        <div className="scene-rain" aria-hidden="true" />
+        <div className="scene-rain scene-rain-back" aria-hidden="true" />
+        <div className="train-ceiling" aria-hidden="true" />
+        <div className="train-lamp" aria-hidden="true" />
+        <div className="train-lamp-glow" aria-hidden="true" />
+        <div className="train-window window-a" aria-hidden="true" />
+        <div className="train-window window-b" aria-hidden="true" />
+        <div className="train-window window-c" aria-hidden="true" />
+        <div className="train-seat seat-left" aria-hidden="true" />
+        <div className="train-seat seat-right" aria-hidden="true" />
+        <div className="train-seat seat-back" aria-hidden="true" />
+        <div className="train-aisle" aria-hidden="true" />
+        <div className="body-shadow" aria-hidden="true" />
+        <div className="body-outline" aria-hidden="true" />
+        <div className="npc-silhouette npc-conductor" aria-hidden="true" />
+        <div className="luggage-case" aria-hidden="true" />
+      </>
+    );
+  }
+
+  if (scenarioId === "office-dungeon") {
+    return (
+      <>
+        <div className="office-grid-light" aria-hidden="true" />
+        <div className="office-monitor monitor-a" aria-hidden="true" />
+        <div className="office-monitor monitor-b" aria-hidden="true" />
+        <div className="office-monitor monitor-c" aria-hidden="true" />
+        <div className="office-desk desk-a" aria-hidden="true" />
+        <div className="office-desk desk-b" aria-hidden="true" />
+        <div className="office-glass-room" aria-hidden="true" />
+        <div className="office-alert" aria-hidden="true" />
+        <div className="office-coffee-spill" aria-hidden="true" />
+        <div className="npc-silhouette npc-manager" aria-hidden="true" />
+        <div className="sticky-note note-a" aria-hidden="true" />
+        <div className="sticky-note note-b" aria-hidden="true" />
+      </>
+    );
+  }
+
+  if (scenarioId === "noble-banquet") {
+    return (
+      <>
+        <div className="banquet-curtain curtain-left" aria-hidden="true" />
+        <div className="banquet-curtain curtain-right" aria-hidden="true" />
+        <div className="banquet-chandelier" aria-hidden="true" />
+        <div className="banquet-light" aria-hidden="true" />
+        <div className="banquet-table" aria-hidden="true" />
+        <div className="banquet-moonlight" aria-hidden="true" />
+        <div className="npc-silhouette npc-duke" aria-hidden="true" />
+        <div className="npc-silhouette npc-guest" aria-hidden="true" />
+        <div className="banquet-sparkle sparkle-a" aria-hidden="true" />
+        <div className="banquet-sparkle sparkle-b" aria-hidden="true" />
+      </>
+    );
+  }
+
+  return <div className="scene-placeholder-art" aria-hidden="true" />;
+}
 
 function App() {
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
@@ -13,6 +76,7 @@ function App() {
   const [action, setAction] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [selectedObjectId, setSelectedObjectId] = useState("");
 
   useEffect(() => {
     fetchScenarios()
@@ -38,6 +102,17 @@ function App() {
 
     return () => window.clearInterval(timer);
   }, [room?.id]);
+
+  useEffect(() => {
+    if (!room?.worldState.interactiveObjects.length) {
+      return;
+    }
+
+    const hasSelected = room.worldState.interactiveObjects.some((item) => item.id === selectedObjectId);
+    if (!hasSelected) {
+      setSelectedObjectId(room.worldState.interactiveObjects[0].id);
+    }
+  }, [room?.worldState.interactiveObjects, selectedObjectId]);
 
   async function handleCreateRoom(event: FormEvent) {
     event.preventDefault();
@@ -93,9 +168,8 @@ function App() {
     }
   }
 
-  async function handleSubmitTurn(event: FormEvent) {
-    event.preventDefault();
-    if (!room || !playerId || !action.trim()) {
+  async function runAction(nextAction: string) {
+    if (!room || !playerId || !nextAction.trim()) {
       return;
     }
 
@@ -103,7 +177,7 @@ function App() {
       setLoading(true);
       const nextRoom = await submitTurn(room.id, {
         playerId,
-        content: action.trim()
+        content: nextAction.trim()
       });
       setRoom({ ...nextRoom });
       setAction("");
@@ -114,15 +188,34 @@ function App() {
     }
   }
 
+  async function handleSubmitTurn(event: FormEvent) {
+    event.preventDefault();
+    await runAction(action);
+  }
+
+  function hotspotLabel(item: InteractiveObject) {
+    if (item.accent === "danger") {
+      return "危险";
+    }
+
+    if (item.accent === "mystery") {
+      return "线索";
+    }
+
+    return "互动";
+  }
+
   const me = room?.players.find((player) => player.id === playerId);
+  const selectedObject =
+    room?.worldState.interactiveObjects.find((item) => item.id === selectedObjectId) ?? null;
 
   return (
     <main className="app-shell">
       <section className="hero-card">
-        <p className="eyebrow">Hackathon Frame</p>
+        <p className="eyebrow">AI Improvised Adventure</p>
         <h1>AI 地下城</h1>
         <p className="hero-copy">
-          先把多人房间、聊天式冒险和 AI 主持人接起来，再慢慢把剧本、语音和实时联机做强。
+          这版先把多人房间、AI 主持人和动态 2D 舞台接起来。现在的场景不依赖图片，而是直接由代码绘制和驱动动画。
         </p>
       </section>
 
@@ -192,9 +285,74 @@ function App() {
 
         <section className="panel story-panel">
           <div className="panel-header">
-            <h2>故事流</h2>
-            <span>自由输入比按钮更重要</span>
+            <h2>故事舞台</h2>
+            <span>现在可以先点场景，再用自由输入接管剧情</span>
           </div>
+
+          <section className="scene-panel">
+            <div className="scene-copy">
+              <div>
+                <p className="eyebrow">Animated Stage</p>
+                <h3>{room?.worldState.sceneTitle ?? "互动场景"}</h3>
+              </div>
+              <p>{room?.worldState.sceneDescription ?? "开场后，这里会显示当前场景与可交互物件。"}</p>
+            </div>
+
+            <div className={`scene-board scene-${room?.scenarioId ?? "empty"}`}>
+              {renderSceneIllustration(room?.scenarioId)}
+              <div className="scene-vignette" aria-hidden="true" />
+              {room?.worldState.interactiveObjects.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`hotspot hotspot-${item.accent ?? "neutral"} ${
+                    selectedObjectId === item.id ? "is-selected" : ""
+                  }`}
+                  style={{ left: `${item.x}%`, top: `${item.y}%` }}
+                  onClick={() => setSelectedObjectId(item.id)}
+                >
+                  <span>{item.name}</span>
+                  <small>{hotspotLabel(item)}</small>
+                </button>
+              ))}
+            </div>
+
+            <div className="scene-footer">
+              <div className="object-detail">
+                {selectedObject ? (
+                  <>
+                    <p className="eyebrow">Selected</p>
+                    <h4>{selectedObject.name}</h4>
+                    <p>{selectedObject.description}</p>
+                    <p className="object-status">状态：{selectedObject.status}</p>
+                  </>
+                ) : (
+                  <>
+                    <p className="eyebrow">Selected</p>
+                    <h4>点击一个场景热点</h4>
+                    <p>选中后可以用快捷动作，也可以直接自由输入一段更离谱的操作。</p>
+                  </>
+                )}
+              </div>
+
+              <div className="quick-actions">
+                <p className="eyebrow">Quick Actions</p>
+                <div className="quick-action-list">
+                  {(selectedObject?.actions ?? ["观察四周", "试探队友", "整理线索"]).map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => runAction(preset)}
+                      disabled={room?.status !== "in_progress" || loading}
+                    >
+                      {preset}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </section>
 
           <div className="message-list">
             {room?.messages.map((message) => (
@@ -207,14 +365,14 @@ function App() {
             {!room && (
               <div className="empty-state">
                 <p>先创建或加入一个房间。</p>
-                <p>这版重点是把多人剧本流程跑通，不先卷复杂战斗系统。</p>
+                <p>这版的重点是让评委第一眼就觉得它不是普通聊天窗口，而是一个有舞台感的 AI 场景。</p>
               </div>
             )}
           </div>
 
           <form onSubmit={handleSubmitTurn} className="action-bar">
             <input
-              placeholder="输入你的行动，例如：我偷走地图 / 我观察谁最紧张"
+              placeholder="输入你的行动，例如：我砸开车窗 / 我偷看尸体手里的车票"
               value={action}
               onChange={(event) => setAction(event.target.value)}
               disabled={room?.status !== "in_progress"}
@@ -227,6 +385,15 @@ function App() {
 
         <aside className="panel roster-panel">
           <h2>玩家与身份</h2>
+
+          {room?.worldState.clues.length ? (
+            <div className="clue-card">
+              <p className="eyebrow">Clues</p>
+              {room.worldState.clues.map((clue) => (
+                <p key={clue}>{clue}</p>
+              ))}
+            </div>
+          ) : null}
 
           {room?.players.map((player) => (
             <article key={player.id} className={`player-card ${player.id === playerId ? "is-me" : ""}`}>
@@ -257,4 +424,3 @@ function App() {
 }
 
 export default App;
-

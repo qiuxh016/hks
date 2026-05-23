@@ -23,9 +23,9 @@ npm install
 npm run dev
 ```
 
-前端默认跑在 `http://localhost:5173`
+前端默认跑在 `http://localhost:8080`
 
-后端默认跑在 `http://localhost:8787`
+后端默认跑在 `http://localhost:8081`
 
 ## 当前接口
 
@@ -42,4 +42,3 @@ npm run dev
 - 你：推进后端流程和 AI DM 逻辑
 - 桑耳：前端房间、聊天 UI、交互体验
 - 第三人：联调、部署、语音或实时同步增强
-

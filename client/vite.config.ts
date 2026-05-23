@@ -9,10 +9,11 @@ export default defineConfig({
   root: rootDir,
   plugins: [react()],
   server: {
-    port: 5173,
+    port: 8080,
+    strictPort: true,
     proxy: {
       "/api": {
-        target: "http://localhost:8787",
+        target: "http://localhost:8081",
         changeOrigin: true
       }
     }

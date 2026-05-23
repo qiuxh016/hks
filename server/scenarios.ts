@@ -33,4 +33,3 @@ export function getScenario(scenarioId: ScenarioId): Scenario {
 
   return scenario;
 }
-

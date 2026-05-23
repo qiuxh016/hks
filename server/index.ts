@@ -1,12 +1,8 @@
 import cors from "cors";
 import dotenv from "dotenv";
 import express from "express";
-import {
-  CreateRoomRequest,
-  JoinRoomRequest,
-  TurnRequest
-} from "../shared/types";
-import { buildOpening, buildRoleCards, resolveTurn } from "./dm";
+import { CreateRoomRequest, JoinRoomRequest, TurnRequest } from "../shared/types";
+import { buildInitialSceneState, buildOpening, buildRoleCards, resolveTurn } from "./dm";
 import { scenarios } from "./scenarios";
 import {
   appendMessages,
@@ -14,13 +10,14 @@ import {
   createRoom,
   getRoom,
   joinRoom,
+  replaceSceneObjects,
   updateRoom
 } from "./store";
 
 dotenv.config();
 
 const app = express();
-const port = Number(process.env.PORT ?? 8787);
+const port = Number(process.env.PORT ?? 8081);
 
 app.use(cors());
 app.use(express.json());
@@ -57,6 +54,7 @@ app.get("/api/rooms/:roomId", (req, res) => {
 app.post("/api/rooms/:roomId/join", (req, res) => {
   try {
     const body = req.body as JoinRoomRequest;
+
     if (!body.playerName?.trim()) {
       return res.status(400).json({ error: "缺少 playerName" });
     }
@@ -79,12 +77,18 @@ app.post("/api/rooms/:roomId/start", (req, res) => {
     }
 
     const roleCards = buildRoleCards(room.scenarioId, room.players);
+    const sceneState = buildInitialSceneState(room.scenarioId);
+
     assignRoleCards(room.id, roleCards);
+    replaceSceneObjects(room.id, sceneState.interactiveObjects);
 
     updateRoom(room.id, (draft) => {
       draft.status = "in_progress";
       draft.worldState.currentLocation = "故事开场";
       draft.worldState.quests = ["活下来", "找到真相", "别轻信任何人"];
+      draft.worldState.clues = sceneState.clues;
+      draft.worldState.sceneTitle = sceneState.sceneTitle;
+      draft.worldState.sceneDescription = sceneState.sceneDescription;
     });
 
     appendMessages(room.id, buildOpening(room));
@@ -134,6 +138,11 @@ app.post("/api/rooms/:roomId/turn", (req, res) => {
       draft.worldState.round += 1;
       draft.worldState.tension = Math.min(10, draft.worldState.tension + 1);
       draft.worldState.currentLocation = dmResult.nextLocation;
+      draft.worldState.interactiveObjects = dmResult.interactiveObjects;
+
+      if (!draft.worldState.clues.includes(dmResult.newClue)) {
+        draft.worldState.clues = [...draft.worldState.clues, dmResult.newClue];
+      }
     });
 
     appendMessages(room.id, [
@@ -155,4 +164,3 @@ app.post("/api/rooms/:roomId/turn", (req, res) => {
 app.listen(port, () => {
   console.log(`AI dungeon server listening on http://localhost:${port}`);
 });
-

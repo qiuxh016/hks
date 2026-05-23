@@ -1,9 +1,4 @@
-import {
-  Player,
-  RoleCard,
-  Room,
-  ScenarioId
-} from "../shared/types";
+import { InteractiveObject, Player, RoleCard, Room, ScenarioId } from "../shared/types";
 import { getScenario } from "./scenarios";
 
 const roleDecks: Record<ScenarioId, Array<Omit<RoleCard, "personality"> & { personalities: string[] }>> = {
@@ -73,11 +68,147 @@ const dramaticTwists = [
   "你刚做完动作，屋内最紧张的人忽然抢先一步开口，似乎想把矛头引向别人。",
   "空气里传来一阵短促的笑声，像是有人早就预料到你会这么做。",
   "你的行动触发了新的线索，但也让一个隐藏更深的秘密浮出水面。",
-  "事情短暂朝有利方向发展，可代价是房间里的信任感继续崩坏。 "
+  "事情短暂朝有利方向发展，可代价是房间里的信任感继续崩坏。"
 ];
 
 function pick<T>(list: T[], index: number): T {
   return list[index % list.length];
+}
+
+function buildSceneObjects(scenarioId: ScenarioId): InteractiveObject[] {
+  if (scenarioId === "midnight-train") {
+    return [
+      {
+        id: "body",
+        name: "尸体",
+        description: "倒在座椅旁，手里似乎攥着一角车票。",
+        status: "无人敢靠近",
+        actions: ["搜查尸体", "检查伤口", "偷看手中的东西"],
+        x: 54,
+        y: 58,
+        accent: "danger"
+      },
+      {
+        id: "window",
+        name: "车窗",
+        description: "玻璃被雨拍得发白，外面几乎什么都看不清。",
+        status: "窗锁松动",
+        actions: ["观察窗外", "砸开车窗", "试着打开窗锁"],
+        x: 83,
+        y: 35,
+        accent: "mystery"
+      },
+      {
+        id: "conductor",
+        name: "乘务员",
+        description: "表情过于镇定，像在隐瞒什么。",
+        status: "正在安抚乘客",
+        actions: ["盘问乘务员", "观察表情", "偷偷跟踪他"],
+        x: 19,
+        y: 30,
+        accent: "neutral"
+      },
+      {
+        id: "luggage",
+        name: "行李架",
+        description: "上面摆着几件无人认领的行李。",
+        status: "有一只皮箱没贴姓名牌",
+        actions: ["检查皮箱", "翻找行李", "记住可疑物品"],
+        x: 38,
+        y: 19,
+        accent: "mystery"
+      }
+    ];
+  }
+
+  if (scenarioId === "office-dungeon") {
+    return [
+      {
+        id: "meeting-room",
+        name: "会议室",
+        description: "玻璃门后坐着几位脸色发青的同事。",
+        status: "里面正传出 KPI 争吵声",
+        actions: ["偷听会议", "闯进会议室", "寻找会议纪要"],
+        x: 66,
+        y: 27,
+        accent: "mystery"
+      },
+      {
+        id: "boss-desk",
+        name: "老板工位",
+        description: "空着，但电脑屏幕还亮着。",
+        status: "有一封未发送邮件",
+        actions: ["查看电脑", "搜老板抽屉", "拍下邮件内容"],
+        x: 80,
+        y: 64,
+        accent: "danger"
+      },
+      {
+        id: "pantry",
+        name: "茶水间",
+        description: "咖啡机坏了，气氛像事故现场。",
+        status: "有人刚在这里哭过",
+        actions: ["安抚同事", "寻找痕迹", "偷听八卦"],
+        x: 24,
+        y: 66,
+        accent: "neutral"
+      }
+    ];
+  }
+
+  return [
+    {
+      id: "chandelier",
+      name: "水晶灯",
+      description: "灯火璀璨，照得每个人的表情都无处遁形。",
+      status: "似乎刚被人动过手脚",
+      actions: ["检查灯座", "观察谁在看灯", "制造停电"],
+      x: 48,
+      y: 15,
+      accent: "danger"
+    },
+    {
+      id: "duke-table",
+      name: "公爵座席",
+      description: "空着的主位比有人坐着时更令人不安。",
+      status: "遗嘱失踪后，这里成了焦点",
+      actions: ["搜主位", "观察宾客反应", "寻找遗嘱碎片"],
+      x: 68,
+      y: 58,
+      accent: "mystery"
+    },
+    {
+      id: "balcony",
+      name: "露台",
+      description: "夜风把低语吹得四散，很适合密谈。",
+      status: "有人刚从这里离开",
+      actions: ["追去露台", "偷听谈话", "检查脚印"],
+      x: 20,
+      y: 42,
+      accent: "neutral"
+    }
+  ];
+}
+
+function getSceneMeta(scenarioId: ScenarioId) {
+  if (scenarioId === "midnight-train") {
+    return {
+      sceneTitle: "暴雨列车车厢",
+      sceneDescription: "昏黄车灯摇晃，尸体倒在过道中央，所有人都在偷偷观察彼此。"
+    };
+  }
+
+  if (scenarioId === "office-dungeon") {
+    return {
+      sceneTitle: "失控办公区",
+      sceneDescription: "荧光灯闪烁，会议通知像诅咒一样不断弹出，空气里满是甩锅前兆。"
+    };
+  }
+
+  return {
+    sceneTitle: "贵族晚宴主厅",
+    sceneDescription: "音乐还在继续，可每个人都在悄悄盘算谁会先出局。"
+  };
 }
 
 export function buildRoleCards(scenarioId: ScenarioId, players: Player[]): RoleCard[] {
@@ -112,10 +243,25 @@ export function buildOpening(room: Room) {
   ];
 }
 
+export function buildInitialSceneState(scenarioId: ScenarioId) {
+  const meta = getSceneMeta(scenarioId);
+
+  return {
+    ...meta,
+    clues:
+      scenarioId === "midnight-train"
+        ? ["尸体手里攥着车票碎片", "乘务员表现得过于镇定"]
+        : scenarioId === "office-dungeon"
+          ? ["老板工位电脑还没锁屏", "茶水间有人刚哭过"]
+          : ["遗嘱在灯亮起后消失", "露台有人留下新鲜脚印"],
+    interactiveObjects: buildSceneObjects(scenarioId)
+  };
+}
+
 function inferOutcome(action: string) {
   const lowered = action.toLowerCase();
 
-  if (action.includes("搜") || action.includes("调查") || lowered.includes("check")) {
+  if (action.includes("搜") || action.includes("查") || lowered.includes("check")) {
     return "你翻到了不该被看见的痕迹，但也让某个旁观者开始提防你。";
   }
 
@@ -123,7 +269,7 @@ function inferOutcome(action: string) {
     return "你动作很快，目标到手了一半，可惜另一个人显然看见了。";
   }
 
-  if (action.includes("骗") || action.includes("嘴") || action.includes("说服")) {
+  if (action.includes("骗") || action.includes("说服") || action.includes("套话")) {
     return "对方表面上被你说动了，实际上他只是想看看你还能编到什么程度。";
   }
 
@@ -131,7 +277,7 @@ function inferOutcome(action: string) {
     return "你确实离开了原地，但逃跑本身也把你送进了更糟的新局面。";
   }
 
-  if (action.includes("恋爱") || action.includes("撩") || action.includes("色诱")) {
+  if (action.includes("撩") || action.includes("色诱") || action.includes("恋爱")) {
     return "气氛被你搅得暧昧起来，可暧昧在这里往往比刀子更危险。";
   }
 
@@ -141,15 +287,34 @@ function inferOutcome(action: string) {
 export function resolveTurn(room: Room, player: Player, content: string) {
   const twist = pick(dramaticTwists, room.worldState.round + content.length);
   const outcome = inferOutcome(content);
+  const matchingObject = room.worldState.interactiveObjects.find(
+    (item) => content.includes(item.name) || item.actions.some((action) => content.includes(action))
+  );
+  const newClue =
+    room.scenarioId === "midnight-train"
+      ? "车厢地板上有拖拽痕迹，说明尸体可能并不是在这里死的。"
+      : room.scenarioId === "office-dungeon"
+        ? "那封未发送邮件的抬头里藏着一个被删除的项目代号。"
+        : "宴会名单上多出了一位没人承认邀请过的名字。";
+
+  const interactiveObjects = room.worldState.interactiveObjects.map((item) =>
+    item.id === matchingObject?.id
+      ? {
+          ...item,
+          status: `刚被 ${player.name} 动过，现在比之前更可疑`
+        }
+      : item
+  );
 
   return {
-    narration: `${player.name}刚刚选择“${content}”。${outcome}${twist}`,
+    narration: `${player.name}刚刚选择“${content}”。${outcome}${matchingObject ? ` 你把注意力集中在${matchingObject.name}上。` : ""}${twist}`,
     nextLocation:
       room.scenarioId === "midnight-train"
         ? "列车车厢"
         : room.scenarioId === "office-dungeon"
           ? "开放办公区"
-          : "宴会主厅"
+          : "宴会主厅",
+    newClue,
+    interactiveObjects
   };
 }
-

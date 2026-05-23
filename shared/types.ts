@@ -35,11 +35,26 @@ export interface Scenario {
   openingHook: string;
 }
 
+export interface InteractiveObject {
+  id: string;
+  name: string;
+  description: string;
+  status: string;
+  actions: string[];
+  x: number;
+  y: number;
+  accent?: "danger" | "mystery" | "neutral";
+}
+
 export interface WorldState {
   currentLocation: string;
   round: number;
   tension: number;
   quests: string[];
+  clues: string[];
+  sceneTitle: string;
+  sceneDescription: string;
+  interactiveObjects: InteractiveObject[];
   npcStates: Record<string, string>;
   playerRelationships: Record<string, string>;
 }
@@ -73,4 +88,3 @@ export interface RoomSessionResponse {
   room: Room;
   playerId: string;
 }
-

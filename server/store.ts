@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import {
+  InteractiveObject,
   Message,
   Player,
   RoleCard,
@@ -24,6 +25,10 @@ function createWorldState(): WorldState {
     round: 0,
     tension: 1,
     quests: [],
+    clues: [],
+    sceneTitle: "等待开场",
+    sceneDescription: "房主开始游戏后，这里会出现第一个可交互场景。",
+    interactiveObjects: [],
     npcStates: {},
     playerRelationships: {}
   };
@@ -127,6 +132,17 @@ export function assignRoleCards(roomId: string, roleCards: RoleCard[]) {
   return room;
 }
 
+export function replaceSceneObjects(roomId: string, interactiveObjects: InteractiveObject[]) {
+  const room = rooms.get(roomId);
+
+  if (!room) {
+    throw new Error("房间不存在");
+  }
+
+  room.worldState.interactiveObjects = interactiveObjects;
+  return room;
+}
+
 export function updateRoom(roomId: string, updater: (room: Room) => void) {
   const room = rooms.get(roomId);
 
@@ -137,4 +153,3 @@ export function updateRoom(roomId: string, updater: (room: Room) => void) {
   updater(room);
   return room;
 }
-
