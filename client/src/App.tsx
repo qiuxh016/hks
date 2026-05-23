@@ -129,6 +129,18 @@ function App() {
     });
   }, [room?.id, playerId, myPlayerName]);
 
+  // load scenarios
+  useEffect(() => {
+    fetchScenarios()
+      .then((data) => {
+        setScenarios(data);
+        if (data.length > 0 && !data.find((s) => s.id === selectedScenario)) {
+          setSelectedScenario(data[0].id);
+        }
+      })
+      .catch((err: Error) => setError(err.message));
+  }, []);
+
   // health check + network base
   useEffect(() => {
     fetchHealth()
@@ -139,7 +151,8 @@ function App() {
       .then((r) => r.json())
       .then((h) => {
         if (h.localIP) {
-          setNetworkBase(`https://${h.localIP}:5173`);
+          const port = window.location.port || "5173";
+          setNetworkBase(`https://${h.localIP}:${port}`);
         }
       })
       .catch(() => setNetworkBase(window.location.origin));
@@ -456,6 +469,9 @@ function App() {
                   value={selectedScenario}
                   onChange={(event) => setSelectedScenario(event.target.value)}
                 >
+                  {scenarios.length === 0 && (
+                    <option value="midnight-train">加载中…</option>
+                  )}
                   {scenarios.map((scenario) => (
                     <option key={scenario.id} value={scenario.id}>
                       {scenario.title} · {scenario.tone}
