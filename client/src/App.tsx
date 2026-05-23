@@ -49,6 +49,7 @@ function App() {
   const [showQR, setShowQR] = useState(false);
   const [networkBase, setNetworkBase] = useState("");
   const voiceBaseRef = useRef("");
+  const [fromInvite, setFromInvite] = useState(false);
 
   // scene objects
   const [selectedObjectId, setSelectedObjectId] = useState("");
@@ -128,6 +129,16 @@ function App() {
       playerName: myPlayerName
     });
   }, [room?.id, playerId, myPlayerName]);
+
+  // parse invite URL parameter
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const roomParam = params.get("room");
+    if (roomParam) {
+      setRoomCode(roomParam);
+      setFromInvite(true);
+    }
+  }, []);
 
   // load scenarios
   useEffect(() => {
@@ -456,7 +467,7 @@ function App() {
         <aside className="panel controls">
           <h2>房间操作</h2>
 
-          {!room && (
+          {!room && !fromInvite && (
             <form onSubmit={handleCreateRoom} className="stack">
               <label>
                 你的名字
@@ -507,6 +518,11 @@ function App() {
             <p className="muted join-hint">你已在当前房间中，无需再次加入。可直接开始游戏。</p>
           ) : (
             <form onSubmit={handleJoinRoom} className="stack join-form">
+              {fromInvite && (
+                <p className="invite-hint" style={{ margin: 0, color: "var(--accent-2)", fontWeight: 700, fontSize: "0.9rem" }}>
+                  你收到了一个房间邀请
+                </p>
+              )}
               <label>
                 房间号
                 <input value={roomCode} onChange={(event) => setRoomCode(event.target.value)} />

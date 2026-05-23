@@ -207,10 +207,39 @@ io.on("connection", (socket) => {
 });
 
 // ----- REST API -----
+
+function getLocalIPs(): string[] {
+  const interfaces = require("node:os").networkInterfaces();
+  const ips: string[] = [];
+  for (const name of Object.keys(interfaces)) {
+    const net = interfaces[name];
+    if (!net) continue;
+    for (const addr of net) {
+      if (addr.family === "IPv4" && !addr.internal) {
+        ips.push(addr.address);
+      }
+    }
+  }
+  return ips;
+}
+
+function pickBestIP(ips: string[]): string {
+  const preferred = ips.filter(
+    (ip) =>
+      ip.startsWith("192.168.") ||
+      ip.startsWith("10.") ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(ip)
+  );
+  return preferred.length > 0 ? preferred[preferred.length - 1] : ips[0] ?? "127.0.0.1";
+}
+
 app.get("/api/health", (_req, res) => {
+  const ips = getLocalIPs();
   res.json({
     ok: true,
-    mode: process.env.DEEPSEEK_API_KEY ? "ai-ready" : "no-api-key"
+    mode: process.env.DEEPSEEK_API_KEY ? "ai-ready" : "no-api-key",
+    localIP: pickBestIP(ips),
+    allIPs: ips
   });
 });
 
