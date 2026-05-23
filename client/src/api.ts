@@ -2,6 +2,7 @@ import {
   CreateRoomRequest,
   JoinRoomRequest,
   Room,
+  RoomMode,
   RoomSessionResponse,
   Scenario,
   TurnRequest
@@ -45,9 +46,17 @@ export function fetchRoom(roomId: string) {
   return request<Room>(`/api/rooms/${roomId}`);
 }
 
-export function startRoom(roomId: string) {
+export function startRoom(roomId: string, playerId: string) {
   return request<Room>(`/api/rooms/${roomId}/start`, {
-    method: "POST"
+    method: "POST",
+    body: JSON.stringify({ playerId })
+  });
+}
+
+export function toggleReady(roomId: string, playerId: string) {
+  return request<Room>(`/api/rooms/${roomId}/ready`, {
+    method: "POST",
+    body: JSON.stringify({ playerId })
   });
 }
 

@@ -1,103 +1,10 @@
-import { FormEvent, ReactNode, useEffect, useState } from "react";
-import { InteractiveObject, Room, Scenario } from "../../shared/types";
-import { createRoom, fetchRoom, fetchScenarios, joinRoom, startRoom, submitTurn } from "./api";
-
-const sceneBackdropMap: Partial<Record<Scenario["id"], string>> = {
-  "midnight-train": new URL("../../image/ChatGPT Image 2026年5月23日 14_17_27 (1).png", import.meta.url).href,
-  "office-dungeon": new URL("../../image/d6584dab-e2e7-49ab-a5b6-a1141afe205c.png", import.meta.url).href,
-  "noble-banquet": new URL("../../image/2a8a9631-b205-41fa-a339-654e65eb2821.png", import.meta.url).href
-};
-
-const sceneDetailMap: Partial<Record<Scenario["id"], Partial<Record<string, string>>>> = {
-  "midnight-train": {
-    conductor: new URL("../../image/Snipaste_2026-05-23_14-35-31.png", import.meta.url).href,
-    body: new URL("../../image/dc76d1cb-3f10-4425-b740-77c518edcabd.png", import.meta.url).href,
-    "shadow-figure": new URL("../../image/1c9a80d8-de3e-4dc3-9820-8c2f31228624.png", import.meta.url).href
-  },
-  "office-dungeon": {
-    "meeting-room": new URL("../../image/43178a45-1d7f-4e35-b720-8fbf2c6be8a5.png", import.meta.url).href,
-    pantry: new URL("../../image/c29c4822-cbc3-4171-b421-8bf1386ea24b.png", import.meta.url).href,
-    "boss-desk": new URL("../../image/45a368af-02b4-44f9-8988-da0f767d01dd.png", import.meta.url).href
-  },
-  "noble-banquet": {
-    chandelier: new URL("../../image/4d63d793-24a6-46ec-98ce-d5731fb9e6e2.png", import.meta.url).href,
-    stage: new URL("../../image/b53af1b4-5be0-4313-8d70-cd952b8ebde5.png", import.meta.url).href,
-    "duke-seat": new URL("../../image/5ee83649-f18d-42b6-8308-f68948c3b830.png", import.meta.url).href,
-    "balcony-trail": new URL("../../image/27bc414a-c235-489b-8d31-1d414e266be8.png", import.meta.url).href
-  }
-};
-
-function renderSceneIllustration(scenarioId?: Scenario["id"], hasBackdrop?: boolean): ReactNode {
-  if (scenarioId === "midnight-train") {
-    if (hasBackdrop) {
-      return <div className="backdrop-shimmer" aria-hidden="true" />;
-    }
-
-    return (
-      <>
-        <div className="train-ceiling" aria-hidden="true" />
-        <div className="train-lamp" aria-hidden="true" />
-        <div className="train-lamp-glow" aria-hidden="true" />
-        <div className="train-window window-a" aria-hidden="true" />
-        <div className="train-window window-b" aria-hidden="true" />
-        <div className="train-window window-c" aria-hidden="true" />
-        <div className="train-seat seat-left" aria-hidden="true" />
-        <div className="train-seat seat-right" aria-hidden="true" />
-        <div className="train-seat seat-back" aria-hidden="true" />
-        <div className="train-aisle" aria-hidden="true" />
-        <div className="body-shadow" aria-hidden="true" />
-        <div className="body-outline" aria-hidden="true" />
-        <div className="npc-silhouette npc-conductor" aria-hidden="true" />
-      </>
-    );
-  }
-
-  if (scenarioId === "office-dungeon") {
-    if (hasBackdrop) {
-      return <div className="backdrop-shimmer" aria-hidden="true" />;
-    }
-
-    return (
-      <>
-        <div className="office-grid-light" aria-hidden="true" />
-        <div className="office-monitor monitor-a" aria-hidden="true" />
-        <div className="office-monitor monitor-b" aria-hidden="true" />
-        <div className="office-monitor monitor-c" aria-hidden="true" />
-        <div className="office-desk desk-a" aria-hidden="true" />
-        <div className="office-desk desk-b" aria-hidden="true" />
-        <div className="office-glass-room" aria-hidden="true" />
-        <div className="office-alert" aria-hidden="true" />
-        <div className="office-coffee-spill" aria-hidden="true" />
-        <div className="npc-silhouette npc-manager" aria-hidden="true" />
-        <div className="sticky-note note-a" aria-hidden="true" />
-        <div className="sticky-note note-b" aria-hidden="true" />
-      </>
-    );
-  }
-
-  if (scenarioId === "noble-banquet") {
-    if (hasBackdrop) {
-      return <div className="backdrop-shimmer" aria-hidden="true" />;
-    }
-
-    return (
-      <>
-        <div className="banquet-curtain curtain-left" aria-hidden="true" />
-        <div className="banquet-curtain curtain-right" aria-hidden="true" />
-        <div className="banquet-chandelier" aria-hidden="true" />
-        <div className="banquet-light" aria-hidden="true" />
-        <div className="banquet-table" aria-hidden="true" />
-        <div className="banquet-moonlight" aria-hidden="true" />
-        <div className="npc-silhouette npc-duke" aria-hidden="true" />
-        <div className="npc-silhouette npc-guest" aria-hidden="true" />
-        <div className="banquet-sparkle sparkle-a" aria-hidden="true" />
-        <div className="banquet-sparkle sparkle-b" aria-hidden="true" />
-      </>
-    );
-  }
-
-  return <div className="scene-placeholder-art" aria-hidden="true" />;
-}
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import QRCode from "react-qr-code";
+import { createRoom, fetchScenarios, joinRoom, startRoom, submitTurn, toggleReady as apiToggleReady } from "./api";
+import { ChatMessage, useSocket, VoteState } from "./useSocket";
+import VoiceChat from "./VoiceChat";
+import VoiceInput from "./VoiceInput";
+import { Room, RoomMode, Scenario } from "../../shared/types";
 
 function App() {
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
@@ -106,12 +13,85 @@ function App() {
   const [hostName, setHostName] = useState("Elsa");
   const [joinName, setJoinName] = useState("桑耳");
   const [roomCode, setRoomCode] = useState("");
-  const [selectedScenario, setSelectedScenario] = useState<Scenario["id"]>("midnight-train");
+  const [selectedScenario, setSelectedScenario] = useState("midnight-train");
+  const [gameMode, setGameMode] = useState<RoomMode>("multi");
   const [action, setAction] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [selectedObjectId, setSelectedObjectId] = useState("");
-  const [focusedSceneObjectId, setFocusedSceneObjectId] = useState("");
+  const [inviteCopied, setInviteCopied] = useState(false);
+  const [showQR, setShowQR] = useState(false);
+  const [networkBase, setNetworkBase] = useState("");
+  const [fromInvite, setFromInvite] = useState(false);
+  const voiceBaseRef = useRef("");
+  const messageListRef = useRef<HTMLDivElement>(null);
+
+  // auto-scroll to latest message
+  useEffect(() => {
+    if (messageListRef.current) {
+      messageListRef.current.scrollTop = messageListRef.current.scrollHeight;
+    }
+  }, [room?.messages.length]);
+
+  // voting state
+  const [vote, setVote] = useState<VoteState | null>(null);
+  const [voteChoice, setVoteChoice] = useState("");
+  const [voteResult, setVoteResult] = useState<{ tally: Record<string, number>; winner: string } | null>(null);
+  const [voters, setVoters] = useState<string[]>([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [activeTab, setActiveTab] = useState<"story" | "chat">("story");
+  const [unreadCount, setUnreadCount] = useState(0);
+  const chatListRef = useRef<HTMLDivElement>(null);
+  const chatTabActiveRef = useRef(false);
+
+  // auto-scroll chat + keep ref in sync
+  useEffect(() => {
+    chatTabActiveRef.current = activeTab === "chat";
+    if (activeTab === "chat" && chatListRef.current) {
+      chatListRef.current.scrollTop = chatListRef.current.scrollHeight;
+    }
+  }, [chatMessages.length, activeTab]);
+
+  const onRoomState = useCallback((next: Room) => {
+    setRoom(next);
+  }, []);
+
+  const onVoteStart = useCallback((v: VoteState) => {
+    setVote(v);
+    setVoteChoice("");
+    setVoteResult(null);
+    setVoters([]);
+  }, []);
+
+  const onVoteUpdate = useCallback((info: { voterName: string; voted: boolean }) => {
+    setVoters((prev) => [...prev, info.voterName]);
+  }, []);
+
+  const onVoteResult = useCallback((r: { tally: Record<string, number>; winner: string }) => {
+    setVoteResult(r);
+    setVote(null);
+  }, []);
+
+  const onChatMessage = useCallback((msg: ChatMessage) => {
+    setChatMessages((prev) => [...prev, msg]);
+    if (!chatTabActiveRef.current) {
+      setUnreadCount((prev) => prev + 1);
+    }
+  }, []);
+
+  const onError = useCallback((msg: string) => {
+    setError(msg);
+  }, []);
+
+  const { submitVote, sendChatMessage, socket } = useSocket({
+    roomId: room?.id ?? null,
+    onRoomState,
+    onVoteStart,
+    onVoteUpdate,
+    onVoteResult,
+    onChatMessage,
+    onError
+  });
 
   useEffect(() => {
     fetchScenarios()
@@ -122,36 +102,60 @@ function App() {
         }
       })
       .catch((err: Error) => setError(err.message));
+
+    fetch("/api/health")
+      .then((r) => r.json())
+      .then((h) => {
+        setNetworkBase(`https://${h.localIP}:5173`);
+      })
+      .catch(() => setNetworkBase(window.location.origin));
+
+    // auto-fill room code from invite link / QR scan
+    const params = new URLSearchParams(window.location.search);
+    const roomParam = params.get("room");
+    if (roomParam) {
+      setRoomCode(roomParam);
+      setFromInvite(true);
+    }
   }, []);
 
-  useEffect(() => {
-    if (!room?.id) {
-      return;
+  const inviteUrl = room
+    ? `${networkBase || window.location.origin}?room=${room.id}`
+    : "";
+
+  function handleCopyInvite() {
+    if (!room) return;
+
+    const text = inviteUrl;
+
+    // try modern clipboard API first
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(() => {
+        setInviteCopied(true);
+        setTimeout(() => setInviteCopied(false), 2000);
+      }).catch(() => fallbackCopy(text));
+    } else {
+      fallbackCopy(text);
     }
+  }
 
-    const timer = window.setInterval(() => {
-      fetchRoom(room.id)
-        .then(setRoom)
-        .catch(() => undefined);
-    }, 2000);
-
-    return () => window.clearInterval(timer);
-  }, [room?.id]);
-
-  useEffect(() => {
-    if (!room?.worldState.interactiveObjects.length) {
-      return;
+  function fallbackCopy(text: string) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand("copy");
+      setInviteCopied(true);
+      setTimeout(() => setInviteCopied(false), 2000);
+    } catch {
+      // last resort: show the URL so user can manually copy
+      prompt("复制以下链接：", text);
     }
-
-    const hasSelected = room.worldState.interactiveObjects.some((item) => item.id === selectedObjectId);
-    if (!hasSelected) {
-      setSelectedObjectId(room.worldState.interactiveObjects[0].id);
-    }
-  }, [room?.worldState.interactiveObjects, selectedObjectId]);
-
-  useEffect(() => {
-    setFocusedSceneObjectId("");
-  }, [room?.scenarioId, selectedScenario]);
+    document.body.removeChild(ta);
+  }
 
   async function handleCreateRoom(event: FormEvent) {
     event.preventDefault();
@@ -161,12 +165,12 @@ function App() {
     try {
       const session = await createRoom({
         hostName,
-        scenarioId: selectedScenario
+        scenarioId: selectedScenario as Scenario["id"],
+        mode: gameMode
       });
       setRoom(session.room);
       setPlayerId(session.playerId);
       setRoomCode(session.room.id);
-      setFocusedSceneObjectId("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建失败");
     } finally {
@@ -185,7 +189,6 @@ function App() {
       });
       setRoom(session.room);
       setPlayerId(session.playerId);
-      setFocusedSceneObjectId("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "加入失败");
     } finally {
@@ -194,13 +197,11 @@ function App() {
   }
 
   async function handleStart() {
-    if (!room) {
-      return;
-    }
+    if (!room) return;
 
     try {
       setLoading(true);
-      const nextRoom = await startRoom(room.id);
+      const nextRoom = await startRoom(room.id, playerId);
       setRoom({ ...nextRoom });
     } catch (err) {
       setError(err instanceof Error ? err.message : "开始失败");
@@ -209,16 +210,25 @@ function App() {
     }
   }
 
-  async function runAction(nextAction: string) {
-    if (!room || !playerId || !nextAction.trim()) {
-      return;
+  async function handleToggleReady() {
+    if (!room) return;
+    try {
+      const nextRoom = await apiToggleReady(room.id, playerId);
+      setRoom({ ...nextRoom });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "操作失败");
     }
+  }
+
+  async function handleSubmitTurn(event: FormEvent) {
+    event.preventDefault();
+    if (!room || !playerId || !action.trim()) return;
 
     try {
       setLoading(true);
       const nextRoom = await submitTurn(room.id, {
         playerId,
-        content: nextAction.trim()
+        content: action.trim()
       });
       setRoom({ ...nextRoom });
       setAction("");
@@ -229,66 +239,36 @@ function App() {
     }
   }
 
-  async function handleSubmitTurn(event: FormEvent) {
+  function handleChatSubmit(event: FormEvent) {
     event.preventDefault();
-    await runAction(action);
+    if (!room || !chatInput.trim() || !me) return;
+    sendChatMessage(room.id, me.name, chatInput.trim());
+    setChatInput("");
   }
 
-  function hotspotLabel(item: InteractiveObject) {
-    if (item.accent === "danger") {
-      return "危险";
-    }
-
-    if (item.accent === "mystery") {
-      return "线索";
-    }
-
-    return "互动";
+  function insertEmoji(emoji: string) {
+    setChatInput((prev) => prev + emoji);
   }
 
-  function handleSelectObject(item: InteractiveObject) {
-    setSelectedObjectId(item.id);
-    const detailImage = sceneDetailMap[activeScenarioId]?.[item.id];
-    if (detailImage) {
-      setFocusedSceneObjectId(item.id);
-    }
+  function handleVoteSubmit(event: FormEvent) {
+    event.preventDefault();
+    if (!room || !voteChoice) return;
+    submitVote(room.id, playerId, voteChoice);
   }
+
+  const quickEmojis = ["😀","😂","🤣","😍","🤔","😎","👍","👎","🎉","❤️","🔥","💀","👀","🎲","🐉","⚔️","🛡️","🗡️","🏰","🌙","✨","💬"];
 
   const me = room?.players.find((player) => player.id === playerId);
-  const selectedObject =
-    room?.worldState.interactiveObjects.find((item) => item.id === selectedObjectId) ?? null;
-  const activeScenarioId = room?.scenarioId ?? selectedScenario;
-  const sceneBackdrop = sceneBackdropMap[activeScenarioId];
-  const focusedImage = focusedSceneObjectId ? sceneDetailMap[activeScenarioId]?.[focusedSceneObjectId] : undefined;
-  const sceneStyle =
-    focusedImage
-      ? {
-          backgroundImage: `linear-gradient(180deg, rgba(9, 12, 16, 0.08), rgba(9, 12, 16, 0.18)), url("${focusedImage}")`,
-          backgroundPosition:
-            activeScenarioId === "midnight-train" && focusedSceneObjectId === "conductor"
-              ? "center 18%"
-              : "center",
-          backgroundSize: "cover",
-          backgroundRepeat: "no-repeat"
-        }
-      : sceneBackdrop
-        ? {
-            backgroundImage: `linear-gradient(180deg, rgba(9, 12, 16, 0.14), rgba(9, 12, 16, 0.28)), url("${sceneBackdrop}")`,
-            backgroundPosition: "center",
-            backgroundSize: "cover"
-          }
-        : undefined;
-
-  const focusedObject =
-    room?.worldState.interactiveObjects.find((item) => item.id === focusedSceneObjectId) ?? null;
+  const amHost = room?.hostPlayerId === playerId;
+  const allReady = room?.players.every((p) => p.ready) ?? false;
 
   return (
     <main className="app-shell">
       <section className="hero-card">
-        <p className="eyebrow">AI Improvised Adventure</p>
+        <p className="eyebrow">Hackathon Frame</p>
         <h1>AI 地下城</h1>
         <p className="hero-copy">
-          现在办公区剧本也会像列车一样，先看全景，点会议室、茶水间或老板工位后切到对应特写，再回到全景继续推进剧情。
+          多人房间、聊天式冒险和 AI 主持人——实时联机版。
         </p>
       </section>
 
@@ -296,60 +276,195 @@ function App() {
         <aside className="panel controls">
           <h2>房间操作</h2>
 
-          <form onSubmit={handleCreateRoom} className="stack">
-            <label>
-              你的名字
-              <input value={hostName} onChange={(event) => setHostName(event.target.value)} />
-            </label>
+          {/* create form: only for direct visitors, not invite-link visitors */}
+          {!room && !fromInvite && (
+            <form onSubmit={handleCreateRoom} className="stack">
+              <label>
+                你的名字
+                <input value={hostName} onChange={(event) => setHostName(event.target.value)} />
+              </label>
 
-            <label>
-              剧本模式
-              <select
-                value={selectedScenario}
-                onChange={(event) => setSelectedScenario(event.target.value as Scenario["id"])}
-              >
-                {scenarios.map((scenario) => (
-                  <option key={scenario.id} value={scenario.id}>
-                    {scenario.title} · {scenario.tone}
-                  </option>
-                ))}
-              </select>
-            </label>
+              <label>
+                游戏模式
+                <div className="mode-toggle">
+                  <button
+                    type="button"
+                    className={`mode-btn ${gameMode === "single" ? "is-active" : ""}`}
+                    onClick={() => setGameMode("single")}
+                  >
+                    单人冒险
+                  </button>
+                  <button
+                    type="button"
+                    className={`mode-btn ${gameMode === "multi" ? "is-active" : ""}`}
+                    onClick={() => setGameMode("multi")}
+                  >
+                    多人房间
+                  </button>
+                </div>
+              </label>
 
-            <button type="submit" disabled={loading}>
-              创建房间
-            </button>
-          </form>
+              <label>
+                剧本模式
+                <select
+                  value={selectedScenario}
+                  onChange={(event) => setSelectedScenario(event.target.value)}
+                >
+                  {scenarios.map((scenario) => (
+                    <option key={scenario.id} value={scenario.id}>
+                      {scenario.title} · {scenario.tone}
+                    </option>
+                  ))}
+                </select>
+              </label>
 
-          <form onSubmit={handleJoinRoom} className="stack join-form">
-            <label>
-              房间号
-              <input value={roomCode} onChange={(event) => setRoomCode(event.target.value)} />
-            </label>
+              <button type="submit" disabled={loading}>
+                创建房间
+              </button>
+            </form>
+          )}
 
-            <label>
-              加入玩家名
-              <input value={joinName} onChange={(event) => setJoinName(event.target.value)} />
-            </label>
+          {/* join form: always visible when not in a room */}
+          {!room && (
+            <form onSubmit={handleJoinRoom} className={`stack ${!fromInvite ? "join-form" : ""}`}>
+              {fromInvite && (
+                <p className="invite-hint" style={{ margin: 0, color: "var(--accent-2)", fontWeight: 700, fontSize: "0.9rem" }}>
+                  你收到了一个房间邀请
+                </p>
+              )}
+              <label>
+                房间号
+                <input value={roomCode} onChange={(event) => setRoomCode(event.target.value)} />
+              </label>
 
-            <button type="submit" disabled={loading || !roomCode}>
-              加入房间
-            </button>
-          </form>
+              <label>
+                你的名字
+                <input value={joinName} onChange={(event) => setJoinName(event.target.value)} />
+              </label>
+
+              <button type="submit" disabled={loading || !roomCode}>
+                加入房间
+              </button>
+            </form>
+          )}
 
           {room && (
             <div className="status-card">
-              <p>房间号：{room.id}</p>
-              <p>状态：{room.status}</p>
+              <p>房间号：<strong>{room.id}</strong></p>
+              <p>模式：{room.mode === "single" ? "单人冒险" : "多人房间"}</p>
+              <p>状态：{room.status === "lobby" ? "等待中" : room.status === "in_progress" ? "进行中" : "已结束"}</p>
               <p>场景：{scenarios.find((item) => item.id === room.scenarioId)?.title ?? room.scenarioId}</p>
               <p>当前地点：{room.worldState.currentLocation}</p>
               <p>紧张度：{room.worldState.tension} / 10</p>
               <p>回合数：{room.worldState.round}</p>
-              {room.status === "lobby" && (
-                <button onClick={handleStart} disabled={loading}>
-                  开始游戏
-                </button>
+
+              {room.status === "lobby" && room.mode === "multi" && (
+                <>
+                  <div className="ready-list">
+                    {room.players.map((p) => (
+                      <div key={p.id} className={`ready-row ${p.ready ? "is-ready" : ""}`}>
+                        <span className="ready-dot">{p.ready ? "✓" : "○"}</span>
+                        <span>{p.name}</span>
+                        {p.isHost && <span className="ready-tag">房主</span>}
+                      </div>
+                    ))}
+                  </div>
+
+                  {amHost ? (
+                    <button onClick={handleStart} disabled={loading || !allReady}>
+                      {allReady ? "开始游戏" : "等待全员准备"}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handleToggleReady}
+                      disabled={loading}
+                      style={{ background: me?.ready ? "linear-gradient(120deg, #555, #333)" : undefined }}
+                    >
+                      {me?.ready ? "取消准备" : "我准备好了"}
+                    </button>
+                  )}
+
+                  <div className="invite-section">
+                    <button onClick={handleCopyInvite} className="btn-invite">
+                      {inviteCopied ? "已复制！" : "复制邀请链接"}
+                    </button>
+                    <button
+                      onClick={() => setShowQR(!showQR)}
+                      className="btn-invite"
+                      style={{ marginTop: 8, background: "linear-gradient(120deg, #555, #333)" }}
+                    >
+                      {showQR ? "收起二维码" : "显示二维码"}
+                    </button>
+                    {showQR && (
+                      <div className="qr-wrap">
+                        <QRCode value={inviteUrl} size={140} />
+                        <p className="muted" style={{ fontSize: "0.7rem", marginTop: 6 }}>
+                          扫描二维码加入房间
+                        </p>
+                      </div>
+                    )}
+                    {room.players.length > 0 && (
+                      <p className="muted" style={{ fontSize: "0.75rem", marginTop: "0.25rem" }}>
+                        等待中：{room.players.map((p) => p.name).join("、")}
+                      </p>
+                    )}
+                  </div>
+                </>
               )}
+            </div>
+          )}
+
+          {/* Voice Chat */}
+          {room && me && (
+            <VoiceChat
+              socket={socket}
+              roomId={room.id}
+              playerName={me.name}
+            />
+          )}
+
+          {/* Voting UI */}
+          {vote && room && (
+            <div className="panel vote-panel">
+              <h3>投票</h3>
+              <p className="vote-question">{vote.question}</p>
+
+              <form onSubmit={handleVoteSubmit} className="stack">
+                {vote.options.map((opt) => (
+                  <label key={opt} className="vote-option">
+                    <input
+                      type="radio"
+                      name="vote"
+                      value={opt}
+                      checked={voteChoice === opt}
+                      onChange={(event) => setVoteChoice(event.target.value)}
+                    />
+                    {opt}
+                  </label>
+                ))}
+
+                <button type="submit" disabled={!voteChoice}>
+                  投票
+                </button>
+              </form>
+
+              {voters.length > 0 && (
+                <p className="muted" style={{ marginTop: "0.5rem" }}>
+                  已投票：{voters.join("、")}
+                </p>
+              )}
+            </div>
+          )}
+
+          {voteResult && (
+            <div className="panel vote-result-panel">
+              <h3>投票结束</h3>
+              {Object.entries(voteResult.tally).map(([opt, count]) => (
+                <p key={opt}>
+                  {opt}：{count} 票
+                  {opt === voteResult.winner ? "  ← 焦点" : ""}
+                </p>
+              ))}
             </div>
           )}
 
@@ -358,142 +473,128 @@ function App() {
 
         <section className="panel story-panel">
           <div className="panel-header">
-            <h2>故事舞台</h2>
-            <span>先点人，再切特写，再回来继续推剧情</span>
+            <div className="tab-bar">
+              <button
+                type="button"
+                className={`tab-btn ${activeTab === "story" ? "is-active" : ""}`}
+                onClick={() => setActiveTab("story")}
+              >
+                故事流
+              </button>
+              <button
+                type="button"
+                className={`tab-btn ${activeTab === "chat" ? "is-active" : ""}`}
+                onClick={() => { setActiveTab("chat"); setUnreadCount(0); }}
+              >
+                交流区
+                {unreadCount > 0 && (
+                  <span className="chat-badge">{unreadCount}</span>
+                )}
+              </button>
+            </div>
+            <span>{activeTab === "story" ? "自由输入比按钮更重要" : "自由聊天，不影响剧情"}</span>
           </div>
 
-          <section className="scene-panel">
-            <div className="scene-copy">
-              <div>
-                <p className="eyebrow">Scene Focus</p>
-                <h3>{room?.worldState.sceneTitle ?? "互动场景"}</h3>
-              </div>
-              <p>{room?.worldState.sceneDescription ?? "开场后，这里会显示当前场景与可交互物件。"}</p>
-            </div>
-
-            <div
-              className={`scene-board scene-${activeScenarioId} ${sceneBackdrop ? "has-backdrop" : ""} ${
-                focusedImage ? "is-focused-view" : ""
-              }`}
-              style={sceneStyle}
-            >
-              {renderSceneIllustration(activeScenarioId, Boolean(sceneBackdrop || focusedImage))}
-              <div className="scene-vignette" aria-hidden="true" />
-
-              {focusedImage && focusedObject ? (
-                <div className="scene-focus-header">
-                  <div>
-                    <p className="eyebrow">Close View</p>
-                    <strong>{focusedObject.name}</strong>
-                  </div>
-                  <button
-                    type="button"
-                    className="scene-back-button"
-                    onClick={() => setFocusedSceneObjectId("")}
-                  >
-                    返回全景
-                  </button>
-                </div>
-              ) : null}
-
-              {!focusedImage &&
-                room?.worldState.interactiveObjects.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    data-hotspot-id={item.id}
-                    className={`hotspot hotspot-${item.accent ?? "neutral"} ${
-                      selectedObjectId === item.id ? "is-selected" : ""
-                    }`}
-                    style={{ left: `${item.x}%`, top: `${item.y}%` }}
-                    onClick={() => handleSelectObject(item)}
-                  >
-                    <span className="hotspot-hit" aria-hidden="true" />
-                    <span className="hotspot-caption">
-                      <strong>{item.name}</strong>
-                      <small>{hotspotLabel(item)}</small>
-                    </span>
-                  </button>
+          {activeTab === "story" && (
+            <>
+              <div className="message-list" ref={messageListRef}>
+                {room?.messages.map((message) => (
+                  <article key={message.id} className={`message message-${message.type}`}>
+                    <p className="message-speaker">{message.speaker}</p>
+                    <p>{message.content}</p>
+                  </article>
                 ))}
-            </div>
 
-            <div className="scene-footer">
-              <div className="object-detail">
-                {selectedObject ? (
-                  <>
-                    <p className="eyebrow">Selected</p>
-                    <h4>{selectedObject.name}</h4>
-                    <p>{selectedObject.description}</p>
-                    <p className="object-status">状态：{selectedObject.status}</p>
-                  </>
-                ) : (
-                  <>
-                    <p className="eyebrow">Selected</p>
-                    <h4>点击一个场景对象</h4>
-                    <p>点击后会优先切到这张人物或线索的特写图，再决定下一步操作。</p>
-                  </>
+                {room && room.messages.length > 0 && room.messages[room.messages.length - 1].type === "player" && (
+                  <article className="message message-ai">
+                    <p className="message-speaker">AI DM</p>
+                    <p className="thinking-dots">思考中<span>.</span><span>.</span><span>.</span></p>
+                  </article>
+                )}
+
+                {!room && (
+                  <div className="empty-state">
+                    <p>先创建或加入一个房间。</p>
+                    <p>这版重点是把多人剧本流程跑通，不先卷复杂战斗系统。</p>
+                  </div>
                 )}
               </div>
 
-              <div className="quick-actions">
-                <p className="eyebrow">Quick Actions</p>
-                <div className="quick-action-list">
-                  {(selectedObject?.actions ?? ["观察四周", "试探队友", "整理线索"]).map((preset) => (
-                    <button
-                      key={preset}
-                      type="button"
-                      className="ghost-button"
-                      onClick={() => runAction(preset)}
-                      disabled={room?.status !== "in_progress" || loading}
-                    >
-                      {preset}
-                    </button>
-                  ))}
-                </div>
+              <form onSubmit={handleSubmitTurn} className="action-bar">
+                <input
+                  placeholder="输入你的行动，例如：我偷走地图 / 我观察谁最紧张"
+                  value={action}
+                  onChange={(event) => setAction(event.target.value)}
+                  disabled={room?.status !== "in_progress"}
+                />
+                <VoiceInput
+                  onResult={(text) => {
+                    voiceBaseRef.current = "";
+                    setAction((prev) => prev ? `${prev} ${text}` : text);
+                  }}
+                  onInterim={(text) => {
+                    setAction((prev) => {
+                      const base = voiceBaseRef.current ?? "";
+                      return base ? `${base} ${text}` : text;
+                    });
+                    voiceBaseRef.current = voiceBaseRef.current || prev;
+                  }}
+                  disabled={room?.status !== "in_progress"}
+                />
+                <button type="submit" disabled={loading || room?.status !== "in_progress"}>
+                  {loading ? "DM 回应中..." : "执行"}
+                </button>
+              </form>
+            </>
+          )}
+
+          {activeTab === "chat" && (
+            <>
+              <div className="message-list chat-list" ref={chatListRef}>
+                {chatMessages.length === 0 && (
+                  <div className="empty-state" style={{ minHeight: 120 }}>
+                    <p>还没有聊天消息。</p>
+                    <p>在这里和其他玩家自由交流、讨论策略！</p>
+                  </div>
+                )}
+                {chatMessages.map((msg) => (
+                  <article key={msg.id} className={`chat-bubble ${msg.playerName === me?.name ? "is-self" : ""}`}>
+                    <p className="chat-sender">{msg.playerName}</p>
+                    <p className="chat-text">{msg.content}</p>
+                  </article>
+                ))}
               </div>
-            </div>
-          </section>
 
-          <div className="message-list">
-            {room?.messages.map((message) => (
-              <article key={message.id} className={`message message-${message.type}`}>
-                <p className="message-speaker">{message.speaker}</p>
-                <p>{message.content}</p>
-              </article>
-            ))}
-
-            {!room && (
-              <div className="empty-state">
-                <p>先创建或加入一个房间。</p>
-                <p>这版重点是把“点场景对象、看特写、继续互动”这条链路做顺。</p>
+              <div className="emoji-bar">
+                {quickEmojis.map((emoji) => (
+                  <button
+                    key={emoji}
+                    type="button"
+                    className="emoji-btn"
+                    onClick={() => insertEmoji(emoji)}
+                  >
+                    {emoji}
+                  </button>
+                ))}
               </div>
-            )}
-          </div>
 
-          <form onSubmit={handleSubmitTurn} className="action-bar">
-            <input
-              placeholder="输入你的行动，例如：我偷听会议 / 我去茶水间翻找痕迹 / 我查看老板电脑"
-              value={action}
-              onChange={(event) => setAction(event.target.value)}
-              disabled={room?.status !== "in_progress"}
-            />
-            <button type="submit" disabled={loading || room?.status !== "in_progress"}>
-              执行
-            </button>
-          </form>
+              <form onSubmit={handleChatSubmit} className="action-bar">
+                <input
+                  placeholder="输入聊天消息..."
+                  value={chatInput}
+                  onChange={(event) => setChatInput(event.target.value)}
+                  disabled={!room}
+                />
+                <button type="submit" disabled={!room || !chatInput.trim()}>
+                  发送
+                </button>
+              </form>
+            </>
+          )}
         </section>
 
         <aside className="panel roster-panel">
           <h2>玩家与身份</h2>
-
-          {room?.worldState.clues.length ? (
-            <div className="clue-card">
-              <p className="eyebrow">Clues</p>
-              {room.worldState.clues.map((clue) => (
-                <p key={clue}>{clue}</p>
-              ))}
-            </div>
-          ) : null}
 
           {room?.players.map((player) => (
             <article key={player.id} className={`player-card ${player.id === playerId ? "is-me" : ""}`}>

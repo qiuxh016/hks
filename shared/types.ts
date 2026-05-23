@@ -2,6 +2,8 @@ export type ScenarioId = "midnight-train" | "office-dungeon" | "noble-banquet";
 
 export type GameStatus = "lobby" | "in_progress" | "ended";
 
+export type RoomMode = "single" | "multi";
+
 export type MessageType = "system" | "ai" | "player";
 
 export interface RoleCard {
@@ -15,6 +17,7 @@ export interface Player {
   id: string;
   name: string;
   isHost: boolean;
+  ready: boolean;
   roleCard?: RoleCard;
 }
 
@@ -63,6 +66,7 @@ export interface Room {
   id: string;
   scenarioId: ScenarioId;
   status: GameStatus;
+  mode: RoomMode;
   hostPlayerId: string;
   players: Player[];
   messages: Message[];
@@ -73,6 +77,7 @@ export interface Room {
 export interface CreateRoomRequest {
   hostName: string;
   scenarioId: ScenarioId;
+  mode: RoomMode;
 }
 
 export interface JoinRoomRequest {

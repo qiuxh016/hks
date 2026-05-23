@@ -1,5 +1,14 @@
-import { InteractiveObject, Player, RoleCard, Room, ScenarioId } from "../shared/types";
+import OpenAI from "openai";
+import {
+  InteractiveObject,
+  Player,
+  RoleCard,
+  Room,
+  ScenarioId
+} from "../shared/types";
 import { getScenario } from "./scenarios";
+
+// --------------- role decks ---------------
 
 const roleDecks: Record<ScenarioId, Array<Omit<RoleCard, "personality"> & { personalities: string[] }>> = {
   "midnight-train": [
@@ -64,16 +73,25 @@ const roleDecks: Record<ScenarioId, Array<Omit<RoleCard, "personality"> & { pers
   ]
 };
 
-const dramaticTwists = [
-  "你刚做完动作，屋内最紧张的人忽然抢先一步开口，似乎想把矛头引向别人。",
-  "空气里传来一阵短促的笑声，像是有人早就预料到你会这么做。",
-  "你的行动触发了新的线索，但也让一个藏得更深的秘密浮出水面。",
-  "事情短暂朝有利方向发展，可代价是房间里的信任感继续崩坏。"
-];
+// --------------- helpers ---------------
 
 function pick<T>(list: T[], index: number): T {
   return list[index % list.length];
 }
+
+function createOpenAI(): OpenAI | null {
+  const apiKey = process.env.OPENAI_API_KEY;
+  const baseURL = process.env.OPENAI_BASE_URL;
+
+  if (!apiKey) return null;
+
+  return new OpenAI({
+    apiKey,
+    baseURL: baseURL || undefined
+  });
+}
+
+// --------------- scene objects ---------------
 
 function buildSceneObjects(scenarioId: ScenarioId): InteractiveObject[] {
   if (scenarioId === "midnight-train") {
@@ -211,6 +229,8 @@ function getSceneMeta(scenarioId: ScenarioId) {
   };
 }
 
+// --------------- role cards ---------------
+
 export function buildRoleCards(scenarioId: ScenarioId, players: Player[]): RoleCard[] {
   const deck = roleDecks[scenarioId];
 
@@ -224,6 +244,8 @@ export function buildRoleCards(scenarioId: ScenarioId, players: Player[]): RoleC
     };
   });
 }
+
+// --------------- opening ---------------
 
 export function buildOpening(room: Room) {
   const scenario = getScenario(room.scenarioId);
@@ -258,33 +280,115 @@ export function buildInitialSceneState(scenarioId: ScenarioId) {
   };
 }
 
-function inferOutcome(action: string) {
-  const lowered = action.toLowerCase();
+// --------------- AI DM ---------------
 
-  if (action.includes("搜") || action.includes("查") || lowered.includes("check")) {
+function buildSystemPrompt(room: Room): string {
+  const scenario = getScenario(room.scenarioId);
+  const ws = room.worldState;
+
+  const playerList = room.players.map((p) => {
+    if (p.roleCard) {
+      return `- ${p.name}（${p.roleCard.role}），性格${p.roleCard.personality}`;
+    }
+    return `- ${p.name}`;
+  }).join("\n");
+
+  return `你是地下城主持人（AI DM），负责一个多人即兴文字冒险游戏。
+
+【剧本】
+名称：《${scenario.title}》
+调性：${scenario.tone}
+设定：${scenario.pitch}
+
+【当前状态】
+地点：${ws.currentLocation}
+回合数：${ws.round}
+紧张度：${ws.tension}/10
+活跃任务：${ws.quests.join("、") || "暂无"}
+
+【玩家角色】
+${playerList}
+
+【你的职责】
+1. 根据玩家输入即兴推进剧情，像真正的桌游主持人一样灵活
+2. 每个行动必须产生后果——好坏、意外、连锁反应皆可
+3. 扮演场景中的 NPC，让世界感觉"活"的
+4. 制造戏剧冲突和悬念，鼓励玩家之间互动猜疑
+5. 绝对不能替玩家做决定，也不能泄露任何玩家的隐藏目标或秘密
+6. 旁白控制在 3-6 句中文，风格贴合剧本调性（${scenario.tone}）
+7. 当玩家做出离谱操作时，认真对待，给出合理的世界反馈
+8. 适时引入新线索、新 NPC 或意外事件
+9. 回复格式：只输出旁白叙述，不要加任何前缀或标签`;
+}
+
+function buildUserMessage(room: Room, player: Player, content: string): string {
+  const recentMessages = room.messages
+    .slice(-10)
+    .map((m) => `[${m.speaker}]：${m.content}`)
+    .join("\n");
+
+  return `【最近剧情】
+${recentMessages}
+
+【当前行动】
+${player.name}（${player.roleCard?.role ?? "未知身份"}）：${content}
+
+请作为 DM 叙述这个行动的结果和世界的反应。`;
+}
+
+async function resolveTurnWithAI(
+  room: Room,
+  player: Player,
+  content: string
+): Promise<{ narration: string }> {
+  const openai = createOpenAI();
+  if (!openai) throw new Error("no-openai-client");
+
+  const response = await openai.chat.completions.create({
+    model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+    messages: [
+      { role: "system", content: buildSystemPrompt(room) },
+      { role: "user", content: buildUserMessage(room, player, content) }
+    ],
+    temperature: 0.8,
+    max_tokens: 500
+  });
+
+  const narration = response.choices[0]?.message?.content?.trim();
+  if (!narration) throw new Error("AI returned empty response");
+
+  return { narration };
+}
+
+// --------------- fallback (mock DM) ---------------
+
+const dramaticTwists = [
+  "你刚做完动作，屋内最紧张的人忽然抢先一步开口，似乎想把矛头引向别人。",
+  "空气里传来一阵短促的笑声，像是有人早就预料到你会这么做。",
+  "你的行动触发了新的线索，但也让一个隐藏更深的秘密浮出水面。",
+  "事情短暂朝有利方向发展，可代价是房间里的信任感继续崩坏。"
+];
+
+function inferOutcome(action: string) {
+  if (action.includes("搜") || action.includes("调查") || action.toLowerCase().includes("check")) {
     return "你翻到了不该被看见的痕迹，但也让某个旁观者开始提防你。";
   }
-
-  if (action.includes("偷") || action.includes("拿") || lowered.includes("steal")) {
+  if (action.includes("偷") || action.includes("抢") || action.toLowerCase().includes("steal")) {
     return "你动作很快，目标到手了一半，可惜另一个人显然看见了。";
   }
-
-  if (action.includes("骗") || action.includes("说服") || action.includes("套话")) {
+  if (action.includes("骗") || action.includes("嘴") || action.includes("说服")) {
     return "对方表面上被你说动了，实际上他只是想看看你还能编到什么程度。";
   }
-
   if (action.includes("跑") || action.includes("逃")) {
     return "你确实离开了原地，但逃跑本身也把你送进了更糟的新局面。";
   }
-
-  if (action.includes("撩") || action.includes("色诱") || action.includes("恋爱")) {
+  if (action.includes("恋爱") || action.includes("撩") || action.includes("色诱")) {
     return "气氛被你搅得暧昧起来，可暧昧在这里往往比刀子更危险。";
   }
-
   return "世界接住了你的行动，但也顺手把新的麻烦推到了台面上。";
 }
 
-export function resolveTurn(room: Room, player: Player, content: string) {
+function resolveTurnMock(room: Room, player: Player, content: string) {
   const twist = pick(dramaticTwists, room.worldState.round + content.length);
   const outcome = inferOutcome(content);
   const matchingObject = room.worldState.interactiveObjects.find(
@@ -308,7 +412,7 @@ export function resolveTurn(room: Room, player: Player, content: string) {
   );
 
   return {
-    narration: `${player.name}刚刚选择“${content}”。${outcome}${matchingObject ? ` 你的注意力现在落在${matchingObject.name}上。` : ""}${twist}`,
+    narration: `${player.name}刚刚选择"${content}"。${outcome}${matchingObject ? ` 你的注意力现在落在${matchingObject.name}上。` : ""}${twist}`,
     nextLocation:
       room.scenarioId === "midnight-train"
         ? "列车车厢"
@@ -318,4 +422,29 @@ export function resolveTurn(room: Room, player: Player, content: string) {
     newClue,
     interactiveObjects
   };
+}
+
+// --------------- main entry ---------------
+
+export async function resolveTurn(room: Room, player: Player, content: string) {
+  const scenario = getScenario(room.scenarioId);
+  const defaultLocation =
+    room.scenarioId === "midnight-train"
+      ? "列车车厢"
+      : room.scenarioId === "office-dungeon"
+        ? "开放办公区"
+        : "宴会主厅";
+
+  // try AI first
+  try {
+    const result = await resolveTurnWithAI(room, player, content);
+    return {
+      narration: result.narration,
+      nextLocation: defaultLocation
+    };
+  } catch {
+    // fallback to mock DM
+    console.warn("[dm] AI unavailable, using mock DM");
+    return resolveTurnMock(room, player, content);
+  }
 }
