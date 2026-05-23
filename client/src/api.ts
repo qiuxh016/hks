@@ -4,7 +4,8 @@ import {
   Room,
   RoomSessionResponse,
   Scenario,
-  TurnRequest
+  TurnRequest,
+  UpdateRoomSettingsRequest
 } from "../../shared/types";
 
 async function request<T>(input: string, init?: RequestInit): Promise<T> {
@@ -43,6 +44,16 @@ export function joinRoom(roomId: string, payload: JoinRoomRequest) {
 
 export function fetchRoom(roomId: string) {
   return request<Room>(`/api/rooms/${roomId}`);
+}
+
+export function updateRoomSettings(
+  roomId: string,
+  payload: UpdateRoomSettingsRequest & { hostPlayerId: string }
+) {
+  return request<Room>(`/api/rooms/${roomId}/settings`, {
+    method: "PATCH",
+    body: JSON.stringify(payload)
+  });
 }
 
 export function startRoom(roomId: string) {

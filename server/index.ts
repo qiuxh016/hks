@@ -4,22 +4,28 @@ import cors from "cors";
 import dotenv from "dotenv";
 import express from "express";
 import {
-  AI_HOST_SPEAKER,
   CreateRoomRequest,
   JoinRoomRequest,
-  TurnRequest
+  TurnRequest,
+  UpdateRoomSettingsRequest
 } from "../shared/types";
-import { buildOpening, buildRoleCards, refreshStorySummary, resolveTurn } from "./dm";
-import { recordPlayerAction } from "./memory";
+import { buildOpening, buildRoleCards } from "./dm";
 import { startTeaseScheduler } from "./teaseScheduler";
+import { executeHumanTurn, kickoffTurnCycle } from "./turnFlow";
 import { scenarios } from "./scenarios";
 import {
   appendMessages,
+  applyBotDisplayNames,
   assignRoleCards,
   createRoom,
+  dedupeHumanPlayers,
+  fillBotPlayers,
   getRoom,
+  initTurnOrder,
   joinRoom,
-  updateRoom
+  setProcessingTurn,
+  updateRoom,
+  updateRoomMaxPlayers
 } from "./store";
 
 dotenv.config({
@@ -47,8 +53,29 @@ app.post("/api/rooms", (req, res) => {
     return res.status(400).json({ error: "缺少 hostName 或 scenarioId" });
   }
 
-  const session = createRoom(body.hostName.trim(), body.scenarioId);
+  const session = createRoom(body.hostName.trim(), body.scenarioId, body.maxPlayers);
   return res.status(201).json(session);
+});
+
+app.patch("/api/rooms/:roomId/settings", (req, res) => {
+  try {
+    const body = req.body as UpdateRoomSettingsRequest & { hostPlayerId: string };
+
+    if (!body.hostPlayerId) {
+      return res.status(400).json({ error: "缺少 hostPlayerId" });
+    }
+
+    if (!body.maxPlayers) {
+      return res.status(400).json({ error: "缺少 maxPlayers" });
+    }
+
+    const room = updateRoomMaxPlayers(req.params.roomId, body.hostPlayerId, body.maxPlayers);
+    return res.json(room);
+  } catch (error) {
+    return res.status(400).json({
+      error: error instanceof Error ? error.message : "更新房间设置失败"
+    });
+  }
 });
 
 app.get("/api/rooms/:roomId", (req, res) => {
@@ -89,8 +116,13 @@ app.post("/api/rooms/:roomId/start", async (req, res) => {
       return res.status(400).json({ error: "游戏已经开始" });
     }
 
+    dedupeHumanPlayers(room);
+    fillBotPlayers(room);
+
     const roleCards = buildRoleCards(room.scenarioId, room.players);
     assignRoleCards(room.id, roleCards);
+    applyBotDisplayNames(room);
+    initTurnOrder(room);
 
     const roomWithRoles = getRoom(room.id);
     if (!roomWithRoles) {
@@ -102,14 +134,18 @@ app.post("/api/rooms/:roomId/start", async (req, res) => {
     updateRoom(room.id, (draft) => {
       draft.status = "in_progress";
       draft.worldState.currentLocation = opening.nextLocation;
-      draft.worldState.quests = ["活下来", "找到真相", "别轻信任何人"];
-      const openingLine = opening.messages.find((message) => message.type === "ai")?.content;
-      if (openingLine) {
-        draft.worldState.memory.storySummary = `开场：${openingLine.slice(0, 240)}`;
-      }
+      draft.worldState.quests = opening.quests;
+      draft.worldState.memory.storySummary = [
+        `走向：${opening.storyDirection}`,
+        `真相：${opening.coreTruth}`,
+        `目标：${opening.quests.join("；")}`
+      ].join("\n");
     });
 
     appendMessages(room.id, opening.messages);
+
+    setProcessingTurn(room.id, false);
+    kickoffTurnCycle(room.id);
 
     return res.json(getRoom(room.id));
   } catch (error) {
@@ -122,60 +158,12 @@ app.post("/api/rooms/:roomId/start", async (req, res) => {
 app.post("/api/rooms/:roomId/turn", async (req, res) => {
   try {
     const body = req.body as TurnRequest;
-    const room = getRoom(req.params.roomId);
-
-    if (!room) {
-      return res.status(404).json({ error: "房间不存在" });
-    }
-
-    if (room.status !== "in_progress") {
-      return res.status(400).json({ error: "游戏尚未开始" });
-    }
-
-    const player = room.players.find((item) => item.id === body.playerId);
-    if (!player) {
-      return res.status(404).json({ error: "玩家不存在" });
-    }
 
     if (!body.content?.trim()) {
       return res.status(400).json({ error: "行动内容不能为空" });
     }
 
-    const content = body.content.trim();
-    const dmResult = await resolveTurn(room, player, content);
-
-    updateRoom(room.id, (draft) => {
-      draft.worldState.round += 1;
-      draft.worldState.tension = Math.min(10, draft.worldState.tension + 1);
-      draft.worldState.currentLocation = dmResult.nextLocation;
-    });
-
-    const roomAfterRound = getRoom(room.id);
-    if (roomAfterRound) {
-      recordPlayerAction(roomAfterRound, player, content);
-
-      if (roomAfterRound.worldState.round % 4 === 0) {
-        void refreshStorySummary(roomAfterRound).catch((error) => {
-          console.error(`[memory] room ${room.id}:`, error instanceof Error ? error.message : error);
-        });
-      }
-    }
-
-    appendMessages(room.id, [
-      {
-        type: "player",
-        speaker: player.name,
-        content,
-        playerId: player.id
-      },
-      {
-        type: "ai",
-        speaker: AI_HOST_SPEAKER,
-        content: dmResult.narration
-      }
-    ]);
-
-    const updatedRoom = getRoom(room.id);
+    const updatedRoom = await executeHumanTurn(req.params.roomId, body.playerId, body.content.trim());
     return res.json(updatedRoom);
   } catch (error) {
     return res.status(400).json({
@@ -188,4 +176,3 @@ app.listen(port, () => {
   startTeaseScheduler();
   console.log(`AI dungeon server listening on http://localhost:${port}`);
 });
-

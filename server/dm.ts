@@ -92,6 +92,78 @@ type DmReply = {
   nextLocation: string;
 };
 
+export type OpeningPackage = {
+  storyDirection: string;
+  coreTruth: string;
+  objectives: string[];
+  narration: string;
+  nextLocation: string;
+};
+
+function extractSection(raw: string, sectionTitle: string) {
+  const pattern = new RegExp(
+    `##\\s*${sectionTitle}\\s*\\n+([\\s\\S]*?)(?=\\n##\\s*|\\n【地点|$)`,
+    "i"
+  );
+  const match = raw.match(pattern);
+  return match?.[1]?.trim() ?? "";
+}
+
+function extractObjectives(raw: string) {
+  const block = extractSection(raw, "本局必做") || extractSection(raw, "必做事项");
+  if (!block) {
+    return [];
+  }
+
+  return block
+    .split("\n")
+    .map((line) => line.replace(/^[\d\-*、．.]+\s*/, "").trim())
+    .filter((line) => line.length > 0)
+    .slice(0, 5);
+}
+
+function parseOpeningPackage(raw: string, scenarioTitle: string): OpeningPackage {
+  const storyDirection =
+    extractSection(raw, "故事走向") || "你们被卷入一场无法回头的风波，真相藏在细节里。";
+  const coreTruth =
+    extractSection(raw, "要找到的真相") ||
+    extractSection(raw, "核心真相") ||
+    "查明事件背后真正的操纵者。";
+  const objectives = extractObjectives(raw);
+  const storyBlock = extractSection(raw, "开场剧情") || raw;
+  const parsedStory = parseDmReply(storyBlock, "故事开场");
+
+  return {
+    storyDirection,
+    coreTruth,
+    objectives:
+      objectives.length > 0
+        ? objectives
+        : ["调查现场线索", "找出关键证人", `揭开${scenarioTitle}背后的真相`],
+    narration: parsedStory.narration,
+    nextLocation: parsedStory.nextLocation
+  };
+}
+
+function formatMissionBrief(pkg: OpeningPackage) {
+  const objectiveLines = pkg.objectives.map((item, index) => `${index + 1}. ${item}`).join("\n");
+
+  return [
+    "📜 本局任务简报（请先阅读，再开始行动）",
+    "",
+    "【故事走向】",
+    pkg.storyDirection,
+    "",
+    "【要找到的真相】",
+    pkg.coreTruth,
+    "",
+    "【本局必做】",
+    objectiveLines,
+    "",
+    "提示：你的行动应尽量服务于以上目标，AI 主持人会据此推进剧情。"
+  ].join("\n");
+}
+
 function pick<T>(list: T[], index: number): T {
   return list[index % list.length];
 }
@@ -212,7 +284,10 @@ function parseDmReply(raw: string, fallbackLocation: string): DmReply {
   };
 }
 
-async function createDeepSeekReply(messages: DeepSeekMessage[]) {
+export async function createDeepSeekReply(
+  messages: DeepSeekMessage[],
+  options?: { maxTokens?: number }
+) {
   const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
   if (!apiKey) {
     throw new Error("未配置 DEEPSEEK_API_KEY，请先在 .env 中设置。");
@@ -238,7 +313,7 @@ async function createDeepSeekReply(messages: DeepSeekMessage[]) {
       body: JSON.stringify({
         model,
         temperature: 0.85,
-        max_tokens: 600,
+        max_tokens: options?.maxTokens ?? 600,
         messages
       })
     });
@@ -269,39 +344,74 @@ async function createDeepSeekReply(messages: DeepSeekMessage[]) {
 export async function buildOpening(room: Room) {
   const scenario = getScenario(room.scenarioId);
   const playerNames = room.players.map((player) => player.name).join("、");
+  const roster = room.players
+    .map((player) => {
+      const card = player.roleCard;
+      return card ? `${player.name}（${card.role}）` : player.name;
+    })
+    .join("、");
 
-  const openingNarration = await createDeepSeekReply([
-    {
-      role: "system",
-      content: `${buildSystemPrompt(room)}\n\n现在是游戏开场。请用 180-280 字描绘开场场景：交代环境、危机、可调查线索，并给玩家一个明确的行动切入点。最后一行写【地点：xxx】。`
-    },
-    {
-      role: "user",
-      content: [
-        `请为剧本《${scenario.title}》撰写开场白。`,
-        `参与玩家：${playerNames}`,
-        `开场必须呼应异象：${scenario.openingHook}`,
-        "不要列出规则，直接进入故事。"
-      ].join("\n")
-    }
-  ]);
+  const openingRaw = await createDeepSeekReply(
+    [
+      {
+        role: "system",
+        content: [
+          "你是桌游 AI 主持人，正在为玩家生成开局简报。",
+          "必须用中文，且严格按下列 Markdown 小节标题输出，不要省略任何一节：",
+          "## 故事走向",
+          "## 要找到的真相",
+          "## 本局必做",
+          "## 开场剧情",
+          "",
+          "写作要求：",
+          "- 故事走向：80-120字，说明本局整体方向、矛盾与风险。",
+          "- 要找到的真相：写清核心谜题（1-2句）+ 玩家最终要揭开的答案方向。",
+          "- 本局必做：列出 3 条可执行的具体目标（调查、取证、交涉、生存等），让玩家有明确方向，不要空泛。",
+          "- 开场剧情：180-240字沉浸叙事，有画面感，呼应开场异象；最后一行单独写【地点：xxx】。",
+          `- 剧本：${scenario.title}（${scenario.tone}）`,
+          `- 简介：${scenario.pitch}`,
+          `- 异象：${scenario.openingHook}`
+        ].join("\n")
+      },
+      {
+        role: "user",
+        content: [
+          `请为《${scenario.title}》生成开局简报与开场剧情。`,
+          `参与角色：${roster}`,
+          `玩家名：${playerNames}`,
+          "目标：让玩家在开始行动前就知道故事走向、要查明的真相、以及必须完成的事项。"
+        ].join("\n")
+      }
+    ],
+    { maxTokens: 1000 }
+  );
 
-  const parsed = parseDmReply(openingNarration, "故事开场");
+  const opening = parseOpeningPackage(openingRaw, scenario.title);
 
   return {
     messages: [
       {
         type: "system" as const,
         speaker: "系统",
-        content: `游戏开始，当前剧本：${scenario.title}。每位玩家已收到专属身份卡与隐藏目标。`
+        content: `游戏开始 · 剧本《${scenario.title}》。共 ${room.players.length} 名成员。请先阅读下方任务简报，再输入你的行动。`,
+        variant: "brief" as const
+      },
+      {
+        type: "system" as const,
+        speaker: "任务简报",
+        content: formatMissionBrief(opening),
+        variant: "brief" as const
       },
       {
         type: "ai" as const,
         speaker: AI_HOST_SPEAKER,
-        content: parsed.narration
+        content: opening.narration
       }
     ],
-    nextLocation: parsed.nextLocation
+    nextLocation: opening.nextLocation,
+    quests: opening.objectives,
+    storyDirection: opening.storyDirection,
+    coreTruth: opening.coreTruth
   };
 }
 
