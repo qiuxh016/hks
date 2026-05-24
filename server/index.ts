@@ -564,14 +564,20 @@ app.get("/api/scenarios", (_req, res) => {
 });
 
 app.post("/api/rooms", (req, res) => {
-  const body = req.body as CreateRoomRequest;
+  try {
+    const body = req.body as CreateRoomRequest;
 
-  if (!body.hostName?.trim() || !body.scenarioId) {
-    return res.status(400).json({ error: "缺少 hostName 或 scenarioId" });
+    if (!body.hostName?.trim() || !body.scenarioId) {
+      return res.status(400).json({ error: "缺少 hostName 或 scenarioId" });
+    }
+
+    const session = createRoom(body.hostName.trim(), body.scenarioId, body.maxPlayers, body.mode);
+    return res.status(201).json(session);
+  } catch (error) {
+    return res.status(400).json({
+      error: error instanceof Error ? error.message : "创建房间失败"
+    });
   }
-
-  const session = createRoom(body.hostName.trim(), body.scenarioId, body.maxPlayers, body.mode);
-  return res.status(201).json(session);
 });
 
 app.patch("/api/rooms/:roomId/settings", (req, res) => {

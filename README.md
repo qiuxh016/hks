@@ -29,7 +29,7 @@
 
 | 功能 | 说明 |
 |------|------|
-| 创建 / 加入房间 | 支持**单人冒险**与**多人房间**（2–6 人，含 AI 补位） |
+| 创建 / 加入房间 | 支持**单人冒险**与**多人房间**（2–6 人，含 AI 补位）。玩家名不能与剧本角色同名，避免混淆 |
 | 剧本选择 | 三套预设剧本（悬疑列车 / 社畜地下城 / 贵族晚宴） |
 | 邀请 | 房主复制邀请链接或展示二维码；URL 参数 `?room=房间号` 自动填入 |
 | 选角 | 大厅内真人点选角色卡（背景、性格、隐藏目标）；选角后视为已准备 |
@@ -159,7 +159,7 @@
 ### 安装与启动
 
 ```bash
-cd hks-luoshuang-feature
+cd hks
 npm install
 cp .env.example .env
 # 编辑 .env，填入 DEEPSEEK_API_KEY=
@@ -214,8 +214,8 @@ VITE_BGM_URL=/bgm/main.mp3
 ### 1. 大厅
 
 1. 房主：选择模式（单人 / 多人）、剧本、人数 → **创建房间**。
-2. 其他玩家：输入房间号与昵称 → **加入**（或扫码 / 邀请链接）。
-3. 所有真人点击 **角色卡** 选角（可再次点击取消）。
+2. 其他玩家：输入房间号与昵称 → **加入**（或扫码 / 邀请链接）。昵称不能与房间已有角色重名。
+3. 所有真人点击 **角色卡** 选角（可再次点击取消）；未选角不可准备。
 4. 房主调整人数（仅大厅、仅房主）→ **开始游戏**。
 
 ### 2. 开局
@@ -321,12 +321,12 @@ VITE_BGM_URL=/bgm/main.mp3
 |------|------|------|
 | `GET` | `/api/health` | 健康检查；`mode`: `ai-ready` / `no-api-key`；含 `localIP` |
 | `GET` | `/api/scenarios` | 剧本列表 |
-| `POST` | `/api/rooms` | 创建房间 `{ hostName, scenarioId, maxPlayers?, mode? }` |
+| `POST` | `/api/rooms` | 创建房间 `{ hostName, scenarioId, maxPlayers?, mode? }`；房主名与角色重名时 400 |
 | `GET` | `/api/rooms/:roomId` | 获取房间全量状态 |
 | `PATCH` | `/api/rooms/:roomId/settings` | 更新人数 `{ hostPlayerId, maxPlayers }` |
 | `PATCH` | `/api/rooms/:roomId/role` | 选角 `{ playerId, roleSlotId \| null }` |
 | `PATCH` | `/api/rooms/:roomId/ready` | 切换准备（兼容接口） |
-| `POST` | `/api/rooms/:roomId/join` | 加入 `{ playerName }` |
+| `POST` | `/api/rooms/:roomId/join` | 加入 `{ playerName }`；玩家名与已有角色重名时 400 |
 | `POST` | `/api/rooms/:roomId/start` | 开始游戏 |
 | `POST` | `/api/rooms/:roomId/turn` | 提交行动 `{ playerId, content }` |
 | `POST` | `/api/rooms/:roomId/accusation` | 发起指认投票 `{ playerId }` |
@@ -356,11 +356,11 @@ VITE_BGM_URL=/bgm/main.mp3
 ## 项目结构
 
 ```txt
-hks-luoshuang-feature/
+hks/
 ├── client/
 │   ├── src/
 │   │   ├── App.tsx                 # 主壳：大厅、对局、路由分发
-│   │   ├── main.tsx                # React + BrowserRouter
+│   │   ├── main.tsx                # React + HashRouter
 │   │   ├── api.ts                  # REST 封装
 │   │   ├── session.ts              # 本地会话、对局缓存清理
 │   │   ├── useSocket.ts            # Socket.io
@@ -376,11 +376,12 @@ hks-luoshuang-feature/
 │   │   └── components/
 │   │       ├── BgmPlayer.tsx
 │   │       ├── ChatComposer.tsx / ChatPostCard.tsx
-│   │       └── PlayerAgentAssistant.tsx
+│   │       ├── PlayerAgentAssistant.tsx
+│   │       └── TypewriterText.tsx  # 打字机动画效果
 │   └── vite.config.ts
 ├── server/
 │   ├── index.ts                    # HTTP + Socket 入口
-│   ├── store.ts                    # 内存房间、endGame
+│   ├── store.ts                    # 内存房间、endGame、重名校验
 │   ├── dm.ts                       # AI 主持人、开局、回合
 │   ├── turnFlow.ts                 # 回合与收官
 │   ├── caseProgress.ts             # 任务 / 线索链 / 自然结案
@@ -390,6 +391,7 @@ hks-luoshuang-feature/
 │   ├── botPlayer.ts / botMind.ts   # AI 机器人
 │   ├── playerAgent.ts              # 真人推理 Agent
 │   ├── teaseScheduler.ts           # 调侃定时器
+│   ├── chatRelay.ts                # 聊天中继
 │   ├── briefFormat.ts              # 简报 / 目标文案清洗
 │   ├── textFormat.ts               # 玩家可见文本清洗
 │   ├── memory.ts                   # 剧情与行动记忆

@@ -273,6 +273,14 @@ export function createRoom(hostName: string, scenarioId: ScenarioId, maxPlayers 
   rooms.set(roomId, room);
   syncRoleSlots(room);
 
+  const hostNameConflict = room.roleSlots.find(
+    (slot) => slot.role.trim().toLowerCase() === hostName.toLowerCase()
+  );
+  if (hostNameConflict) {
+    rooms.delete(roomId);
+    throw new Error(`房主名「${hostName}」与剧本角色「${hostNameConflict.role}」重名。为避免混淆，请使用不同的名字创建房间。`);
+  }
+
   if (mode === "single" && room.roleSlots[0]) {
     room.roleSlots[0].claimedByPlayerId = hostPlayerId;
     host.roleSlotId = room.roleSlots[0].id;
@@ -395,6 +403,13 @@ export function joinRoom(roomId: string, playerName: string) {
 
   if (existing) {
     return { room, playerId: existing.id };
+  }
+
+  const roleNameConflict = room.roleSlots.find(
+    (slot) => slot.role.trim().toLowerCase() === trimmedName.toLowerCase()
+  );
+  if (roleNameConflict) {
+    throw new Error(`玩家名「${trimmedName}」与已有角色「${roleNameConflict.role}」重名。为避免混淆，请使用不同的名字加入。`);
   }
 
   if (countHumanPlayers(room) >= room.maxPlayers) {

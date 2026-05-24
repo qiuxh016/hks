@@ -1096,6 +1096,8 @@ function App() {
                 </label>
               )}
 
+              {error && <p className="error-text" style={{ marginTop: 4 }}>{error}</p>}
+
               <button type="submit" disabled={loading}>
                 {gameMode === "single" ? "开始冒险" : "创建房间"}
               </button>
@@ -1120,6 +1122,8 @@ function App() {
                 加入玩家名
                 <input value={joinName} onChange={(event) => setJoinName(event.target.value)} />
               </label>
+
+              {error && <p className="error-text" style={{ marginTop: 4 }}>{error}</p>}
 
               <button type="submit" disabled={loading || !roomCode}>
                 加入房间
