@@ -162,11 +162,137 @@ select {
   overflow: hidden;
 }
 
+.grid.left-collapsed {
+  grid-template-columns: 42px minmax(0, 1fr) 340px;
+}
+
+.grid.right-collapsed {
+  grid-template-columns: 320px minmax(0, 1fr) 42px;
+}
+
+.grid.both-collapsed {
+  grid-template-columns: 42px minmax(0, 1fr) 42px;
+}
+
 .panel {
   border-radius: 24px;
   padding: 20px;
   overflow: hidden;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel.controls,
+.panel.roster-panel {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
+}
+
+.panel.controls::-webkit-scrollbar,
+.panel.roster-panel::-webkit-scrollbar {
+  width: 6px;
+}
+
+.panel.controls::-webkit-scrollbar-thumb,
+.panel.roster-panel::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 3px;
+}
+
+.panel.collapsed {
+  padding: 10px 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 24px;
+}
+
+.panel.collapsed > :not(.panel-expand-tab) {
+  display: none;
+}
+
+.panel-toggle {
+  flex-shrink: 0;
+  align-self: flex-end;
+  padding: 4px 10px;
+  font-size: 0.85rem;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  cursor: pointer;
+  line-height: 1.4;
+  margin-bottom: 8px;
+  margin-left: auto;
+}
+
+.panel-toggle:hover {
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.panel-expand-tab {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  padding: 12px 4px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.04);
+  user-select: none;
+}
+
+.panel-expand-tab:hover {
+  background: rgba(0, 0, 0, 0.1);
+  color: var(--ink);
+}
+
+.system-log-section {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.system-log-list {
+  display: grid;
+  gap: 6px;
+  font-size: 0.82rem;
+  max-height: 260px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.15) transparent;
+}
+
+.system-log-list::-webkit-scrollbar {
+  width: 5px;
+}
+
+.system-log-list::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 3px;
+}
+
+.system-log-item {
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.03);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.system-log-item .syslog-speaker {
+  font-weight: 600;
+  font-size: 0.74rem;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+
+.system-log-item .syslog-content {
+  color: var(--ink);
+  line-height: 1.45;
 }
 
 .panel h2,
@@ -218,11 +344,40 @@ select {
 .status-card,
 .me-card,
 .player-card {
-  margin-top: 18px;
-  padding: 16px;
-  border-radius: 20px;
+  margin-top: 12px;
+  padding: 10px 14px;
+  border-radius: 16px;
   border: 1px solid var(--line);
   background: rgba(255, 252, 247, 0.88);
+  cursor: pointer;
+  transition: background 180ms ease;
+}
+
+.player-card:hover {
+  background: rgba(255, 249, 240, 0.95);
+}
+
+.player-card p {
+  margin: 3px 0;
+}
+
+.player-expand-arrow {
+  font-size: 0.7rem;
+  color: var(--muted);
+  margin-left: 4px;
+}
+
+.player-detail {
+  font-size: 0.84rem;
+  line-height: 1.5;
+  padding-top: 4px;
+  border-top: 1px dotted rgba(0, 0, 0, 0.06);
+}
+
+.player-detail-label {
+  font-weight: 600;
+  font-size: 0.74rem;
+  color: var(--muted);
 }
 
 .story-panel {
@@ -238,6 +393,7 @@ select {
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;
+  flex-shrink: 0;
 }
 
 .panel-header span,
@@ -871,6 +1027,7 @@ select {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  flex-shrink: 0;
 }
 
 .action-bar {
@@ -1400,9 +1557,10 @@ select {
 
 /* ---- scene panel ---- */
 .scene-panel {
-  margin: 12px 0 16px;
+  margin: 12px 0 0;
   padding: 18px;
   border-radius: 26px;
+  flex-shrink: 0;
   border: 1px solid var(--line);
   background:
     linear-gradient(180deg, rgba(255, 252, 248, 0.92), rgba(252, 245, 238, 0.8)),
@@ -1428,8 +1586,8 @@ select {
 
 .scene-board {
   position: relative;
-  min-height: min(410px, 38vh);
-  margin: 18px 0 16px;
+  min-height: min(280px, 28vh);
+  margin: 14px 0 10px;
   overflow: hidden;
   border-radius: 30px;
   border: 1px solid rgba(255, 255, 255, 0.12);
@@ -2293,7 +2451,7 @@ select {
   }
 
   .scene-board {
-    min-height: min(320px, 32vh);
+    min-height: min(240px, 24vh);
   }
 
   .hotspot {

@@ -99,6 +99,9 @@ function App() {
   const [thinking, setThinking] = useState(false);
   const [starting, setStarting] = useState(false);
   const [revealedCount, setRevealedCount] = useState(0);
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [rightCollapsed, setRightCollapsed] = useState(false);
+  const [expandedPlayers, setExpandedPlayers] = useState<Set<string>>(new Set());
   const [myPlayerName, setMyPlayerName] = useState("");
   const messageListRef = useRef<HTMLDivElement>(null);
   const roomRef = useRef<Room | null>(null);
@@ -429,6 +432,17 @@ function App() {
   }, [room, playerId, myPlayerName, hostName, joinName]);
 
   const me = room?.players.find((player) => player.id === activePlayerId);
+
+  const storyMessages = useMemo(() => {
+    if (!room?.messages) return [];
+    return room.messages.filter((msg) => msg.type !== "system");
+  }, [room?.messages]);
+
+  const systemMessages = useMemo(() => {
+    if (!room?.messages) return [];
+    return room.messages.filter((msg) => msg.type === "system");
+  }, [room?.messages]);
+
   const currentTurnPlayer = room ? getCurrentTurnPlayer(room) : undefined;
   const isMyTurn = Boolean(
     room?.turnPhase === "human" &&
@@ -873,9 +887,20 @@ function App() {
         <BgmPlayer />
       </section>
 
-      <section className="grid">
-        <aside className="panel controls">
-          <h2>房间操作</h2>
+      <section className={`grid${leftCollapsed && rightCollapsed ? " both-collapsed" : leftCollapsed ? " left-collapsed" : rightCollapsed ? " right-collapsed" : ""}`}>
+        <aside className={`panel controls${leftCollapsed ? " collapsed" : ""}`}>
+          {leftCollapsed ? (
+            <span className="panel-expand-tab" onClick={() => setLeftCollapsed(false)}>
+              ◀ 房间操作
+            </span>
+          ) : (
+            <>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <h2 style={{ margin: 0 }}>房间操作</h2>
+            <button className="panel-toggle" onClick={() => setLeftCollapsed(true)} title="折叠面板">
+              ▶
+            </button>
+          </div>
 
           {!room && !fromInvite && (
             <form onSubmit={handleCreateRoom} className="stack">
@@ -1300,6 +1325,8 @@ function App() {
           )}
 
           {error && !room && <p className="error-text">{error}</p>}
+            </>
+          )}
         </aside>
 
         <section className="panel story-panel">
@@ -1343,7 +1370,7 @@ function App() {
 
               <div className="story-scroll-area" ref={messageListRef}>
                 <div className="message-list">
-                  {room?.messages.map((message) => (
+                  {storyMessages.map((message) => (
                     <article
                       key={message.id}
                       className={`message message-${message.type} ${
@@ -1468,8 +1495,19 @@ function App() {
           )}
         </section>
 
-        <aside className="panel roster-panel">
-          <h2>玩家与身份</h2>
+        <aside className={`panel roster-panel${rightCollapsed ? " collapsed" : ""}`}>
+          {rightCollapsed ? (
+            <span className="panel-expand-tab" onClick={() => setRightCollapsed(false)}>
+              玩家与身份 ▶
+            </span>
+          ) : (
+            <>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <h2 style={{ margin: 0 }}>玩家与身份</h2>
+            <button className="panel-toggle" onClick={() => setRightCollapsed(true)} title="折叠面板">
+              ◀
+            </button>
+          </div>
 
           {(room?.worldState.investigationClues?.length ?? room?.worldState.clues?.length ?? 0) >
             0 && (
@@ -1498,38 +1536,62 @@ function App() {
             </div>
           )}
 
-          {room?.players.map((player) => (
+          {room?.players.map((player) => {
+            const isExpanded = expandedPlayers.has(player.id);
+            const roleName =
+              player.roleCard?.role ??
+              (player.roleSlotId
+                ? room.roleSlots.find((slot) => slot.id === player.roleSlotId)?.role
+                : "未选角");
+
+            return (
             <article
               key={player.id}
               className={`player-card ${player.id === activePlayerId ? "is-me" : ""} ${
                 player.kind === "bot" ? "is-bot" : ""
-              } ${currentTurnPlayer?.id === player.id ? "is-active-turn" : ""}`}
+              } ${currentTurnPlayer?.id === player.id ? "is-active-turn" : ""} ${
+                isExpanded ? "is-expanded" : ""
+              }`}
+              onClick={() => {
+                setExpandedPlayers((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(player.id)) next.delete(player.id);
+                  else next.add(player.id);
+                  return next;
+                });
+              }}
             >
               <p className="player-name">
                 {player.name}
                 {player.isHost ? " · 房主" : ""}
                 {player.kind === "bot" ? " · AI" : ""}
                 {currentTurnPlayer?.id === player.id ? " · 行动中" : ""}
+                <span className="player-expand-arrow">{isExpanded ? " ▾" : " ▸"}</span>
               </p>
-              <p>
-                {player.roleCard?.role ??
-                  (player.roleSlotId
-                    ? room.roleSlots.find((slot) => slot.id === player.roleSlotId)?.role
-                    : "未选角")}
-              </p>
-              <p>{player.roleCard?.personality ?? (player.roleSlotId ? "已选角，待开局" : "待选角")}</p>
-              <p>
-                {player.roleCard?.backstory ??
-                  room.roleSlots.find((slot) => slot.id === player.roleSlotId)?.backstory ??
-                  "大厅选角后可见背景。"}
-              </p>
-              <p>
-                {player.id === activePlayerId && player.roleSlotId
-                  ? room.roleSlots.find((slot) => slot.id === player.roleSlotId)?.secretGoal
-                  : player.roleCard?.secretGoal ?? "开局后可见隐藏目标。"}
-              </p>
+              <p>{roleName}</p>
+              {isExpanded && (
+                <>
+                  <p className="player-detail">
+                    <span className="player-detail-label">性格：</span>
+                    {player.roleCard?.personality ?? (player.roleSlotId ? "已选角，待开局" : "待选角")}
+                  </p>
+                  <p className="player-detail">
+                    <span className="player-detail-label">背景：</span>
+                    {player.roleCard?.backstory ??
+                      room.roleSlots.find((slot) => slot.id === player.roleSlotId)?.backstory ??
+                      "大厅选角后可见背景。"}
+                  </p>
+                  <p className="player-detail">
+                    <span className="player-detail-label">隐藏目标：</span>
+                    {player.id === activePlayerId && player.roleSlotId
+                      ? room.roleSlots.find((slot) => slot.id === player.roleSlotId)?.secretGoal
+                      : player.roleCard?.secretGoal ?? "开局后可见隐藏目标。"}
+                  </p>
+                </>
+              )}
             </article>
-          ))}
+            );
+          })}
 
           {!room && <p className="muted">玩家加入后会显示在这里。</p>}
 
@@ -1539,6 +1601,22 @@ function App() {
               <h3>{me.name}</h3>
               <p>{me.roleCard?.role ?? "还未获得角色卡"}</p>
             </div>
+          )}
+
+          {room && systemMessages.length > 0 && (
+            <div className="system-log-section">
+              <p className="eyebrow">系统日志</p>
+              <div className="system-log-list">
+                {systemMessages.slice().reverse().map((msg) => (
+                  <div key={msg.id} className="system-log-item">
+                    <div className="syslog-speaker">{msg.speaker}</div>
+                    <div className="syslog-content">{msg.content}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+            </>
           )}
         </aside>
       </section>
