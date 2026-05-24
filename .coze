@@ -1,0 +1,10 @@
+[project]
+requires = ["nodejs-24"]
+
+[dev]
+build = ["pnpm", "install"]
+run = ["bash", "-c", "pnpm run build && npx tsx server/index.ts"]
+
+[deploy]
+build = ["bash", "-c", "pnpm install && pnpm run build"]
+run = ["npx", "tsx", "server/index.ts"]

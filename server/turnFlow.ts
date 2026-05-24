@@ -92,6 +92,8 @@ async function runSingleTurn(roomId: string, player: Player, content: string): P
 
   const beforeObjectives = room.worldState.objectives.map((item) => ({ ...item }));
   const dmResult = await resolveTurn(room, player, content);
+  console.log("[turnFlow] objectiveUpdates from DM:", JSON.stringify(dmResult.objectiveUpdates));
+  console.log("[turnFlow] gameStatus from DM:", dmResult.gameStatus);
   const provisionalObjectives = applyObjectiveUpdates(
     room.worldState.objectives,
     dmResult.objectiveUpdates
@@ -134,52 +136,70 @@ async function runSingleTurn(roomId: string, player: Player, content: string): P
     }
   }
 
-  const storyMessages: Array<Parameters<typeof appendMessages>[1][number]> = [
+  /* ---- 逐步发送消息，让用户看到一条条出现而不是一次性全部 ---- */
+  // 1) 玩家行动立即展示
+  appendMessages(roomId, [
     {
       type: "player",
       speaker: player.name,
       content,
       playerId: player.id
-    },
+    }
+  ]);
+
+  // 2) AI 主持人叙述
+  await delayWithFastForward(roomId, 600);
+  appendMessages(roomId, [
     {
       type: "ai",
       speaker: AI_HOST_SPEAKER,
       content: reconciled.narration
     }
-  ];
+  ]);
 
+  // 3) 任务进度
   const progressMessage = formatObjectiveProgressMessage(beforeObjectives, afterObjectives);
   if (progressMessage) {
-    storyMessages.push({
-      type: "system",
-      speaker: "任务进度",
-      content: progressMessage
-    });
+    await delayWithFastForward(roomId, 400);
+    appendMessages(roomId, [
+      {
+        type: "system",
+        speaker: "任务进度",
+        content: progressMessage
+      }
+    ]);
   }
 
+  // 4) 推理线索
   const clueMessage = formatNewClueMessage(reconciled.newClues);
   if (clueMessage) {
-    storyMessages.push({
-      type: "system",
-      speaker: "推理线索",
-      content: clueMessage
-    });
+    await delayWithFastForward(roomId, 400);
+    appendMessages(roomId, [
+      {
+        type: "system",
+        speaker: "推理线索",
+        content: clueMessage
+      }
+    ]);
   }
 
+  // 5) 结案进度
   const roomForProgress = getRoom(roomId);
   if (roomForProgress && reconciled.gameStatus === "in_progress") {
     const caseProgress = formatCaseProgressForPlayers(roomForProgress);
     if (caseProgress) {
-      storyMessages.push({
-        type: "system",
-        speaker: "结案进度",
-        content: caseProgress,
-        variant: "brief"
-      });
+      await delayWithFastForward(roomId, 400);
+      appendMessages(roomId, [
+        {
+          type: "system",
+          speaker: "结案进度",
+          content: caseProgress,
+          variant: "brief"
+        }
+      ]);
     }
   }
 
-  appendMessages(roomId, storyMessages);
 
   if (reconciled.gameStatus !== "in_progress") {
     const latest = getRoom(roomId)!;

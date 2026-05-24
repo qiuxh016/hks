@@ -1,5 +1,5 @@
-import { ReactNode } from "react";
-import { InteractiveObject, Room, Scenario } from "../../shared/types";
+import { ReactNode, useState } from "react";
+import { InteractiveObject, Message, Room, Scenario } from "../../shared/types";
 
 const sceneBackdropMap: Partial<Record<Scenario["id"], string>> = {
   "midnight-train": new URL("../../image/ChatGPT Image 2026年5月23日 14_17_27 (1).png", import.meta.url).href,
@@ -113,29 +113,23 @@ interface Props {
   onClearFocus: () => void;
   onRunAction: (action: string) => void;
   loading: boolean;
+  narratorMessages?: Message[];
 }
 
 export default function SceneRenderer({
   room, selectedObjectId, focusedSceneObjectId,
-  onSelectObject, onFocusObject, onClearFocus, onRunAction, loading
+  onSelectObject, onFocusObject, onClearFocus, onRunAction, loading, narratorMessages
 }: Props) {
   const selectedObject =
     room.worldState.interactiveObjects.find((item) => item.id === selectedObjectId) ?? null;
 
   const scenarioId = room.scenarioId;
   const sceneBackdrop = sceneBackdropMap[scenarioId];
-  const focusedImage = focusedSceneObjectId ? sceneDetailMap[scenarioId]?.[focusedSceneObjectId] : undefined;
-  const focusedObject =
-    focusedSceneObjectId ? room.worldState.interactiveObjects.find((item) => item.id === focusedSceneObjectId) ?? null : null;
 
-  const sceneStyle = focusedImage
-    ? {
-        backgroundImage: `linear-gradient(180deg, rgba(9, 12, 16, 0.08), rgba(9, 12, 16, 0.18)), url("${focusedImage}")`,
-        backgroundPosition: scenarioId === "midnight-train" && focusedSceneObjectId === "conductor" ? "center 18%" : "center",
-        backgroundSize: scenarioId === "midnight-train" && focusedSceneObjectId === "conductor" ? "cover" : "cover",
-        backgroundRepeat: "no-repeat"
-      } as React.CSSProperties
-    : sceneBackdrop
+  // Detail image popup state
+  const [detailPopup, setDetailPopup] = useState<{ image: string; name: string } | null>(null);
+
+  const sceneStyle = sceneBackdrop
       ? {
           backgroundImage: `linear-gradient(180deg, rgba(9, 12, 16, 0.14), rgba(9, 12, 16, 0.28)), url("${sceneBackdrop}")`,
           backgroundPosition: "center",
@@ -143,13 +137,13 @@ export default function SceneRenderer({
         } as React.CSSProperties
       : undefined;
 
-  const hasBackdrop = Boolean(sceneBackdrop || focusedImage);
+  const hasBackdrop = Boolean(sceneBackdrop);
 
   function handleSelectObject(item: InteractiveObject) {
     onSelectObject(item.id);
     const detailImage = sceneDetailMap[scenarioId]?.[item.id];
     if (detailImage) {
-      onFocusObject(item.id);
+      setDetailPopup({ image: detailImage, name: item.name });
     }
   }
 
@@ -164,32 +158,13 @@ export default function SceneRenderer({
       </div>
 
       <div
-        className={`scene-board scene-${scenarioId} ${hasBackdrop ? "has-backdrop" : ""} ${
-          focusedImage ? "is-focused-view" : ""
-        }`}
+        className={`scene-board scene-${scenarioId} ${hasBackdrop ? "has-backdrop" : ""}`}
         style={sceneStyle}
       >
         {renderSceneIllustration(scenarioId, hasBackdrop)}
         <div className="scene-vignette" aria-hidden="true" />
 
-        {focusedImage && focusedObject ? (
-          <div className="scene-focus-header">
-            <div>
-              <p className="eyebrow">Close View</p>
-              <strong>{focusedObject.name}</strong>
-            </div>
-            <button
-              type="button"
-              className="scene-back-button"
-              onClick={onClearFocus}
-            >
-              返回场景
-            </button>
-          </div>
-        ) : null}
-
-        {!focusedImage &&
-          room.worldState.interactiveObjects.map((item) => (
+        {room.worldState.interactiveObjects.map((item) => (
             <button
               key={item.id}
               type="button"
@@ -216,8 +191,33 @@ export default function SceneRenderer({
               )}
             </button>
           ))}
+
+        {narratorMessages && narratorMessages.length > 0 && (
+          <div className="narrator-overlay" id="narrator-scroll">
+            <div className="narrator-content">
+            {narratorMessages.map((m, i) => (
+              <div key={m.id || i} className="narrator-msg">
+                <div className="narrator-label">AI 主持人</div>
+                <div className="narrator-text">{m.content}</div>
+              </div>
+            ))}
+            </div>
+          </div>
+        )}
       </div>
 
+      {/* Detail image popup */}
+      {detailPopup && (
+        <div className="detail-popup-overlay" onClick={() => setDetailPopup(null)}>
+          <div className="detail-popup" onClick={(e) => e.stopPropagation()}>
+            <div className="detail-popup-header">
+              <strong>{detailPopup.name}</strong>
+              <button type="button" className="detail-popup-close" onClick={() => setDetailPopup(null)}>✕</button>
+            </div>
+            <img src={detailPopup.image} alt={detailPopup.name} className="detail-popup-image" />
+          </div>
+        </div>
+      )}
     </section>
   );
 }

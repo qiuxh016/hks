@@ -64,14 +64,11 @@ export function formatCaseProgressForPlayers(room: Room) {
     })
     .join("\n");
 
-  const readyToEnd =
-    allRequiredObjectivesDone(objectives) &&
-    clueCount >= MIN_CLUES_FOR_END &&
-    chainStep >= Math.min(session.length, chainLen);
+  const readyToEnd = allRequiredObjectivesDone(objectives);
 
   return sanitizePlayerFacingText(
     [
-      "📍 结案进度（完成下列条目后可自然胜利收官）",
+      "📍 结案进度（全部本局必做完成后，指认真凶即可胜利收官）",
       "",
       `线索链：${chainStep}/${chainLen} 步，已收集线索 ${clueCount} 条`,
       "",
@@ -85,10 +82,10 @@ export function formatCaseProgressForPlayers(room: Room) {
       "",
       criteria?.naturalEndAction
         ? `✨ 自然结案动作：${criteria.naturalEndAction}`
-        : "✨ 自然结案：全部必做完成后，输入公开真相并指认真凶",
+        : "✨ 结案条件：全部本局必做完成后，在对局中成功指认真凶即可胜利收官",
       criteria?.suggestedRounds ? `⏱ 建议回合：${criteria.suggestedRounds}` : "",
       readyToEnd
-        ? "🎯 条件已满足：下一轮请执行自然结案动作，主持人将胜利收官。"
+        ? "🎯 条件已满足：现在指认真凶即可胜利收官！指认错误会得到否定引导。"
         : `⏳ 未完成 ${countPendingObjectives(objectives)} 项必做，请按顺序调查推进。`
     ]
       .filter(Boolean)
@@ -114,7 +111,7 @@ export function formatCaseProgressForPrompt(room: Room) {
     "【结案进度·主持人必须据此推进，禁止发散无关悬疑】",
     `线索链进度：${step}/${chainLen}（下一步应揭示：${nextBeat}）`,
     `已登记线索 ${room.worldState.investigationClues.length} 条`,
-    pending ? `未完成必做：\n${pending}` : "全部必做已完成——若玩家执行了自然结案动作，必须「胜利收官」。",
+    pending ? `未完成必做：\n${pending}` : "全部必做已完成——若玩家在对话中成功指认了真凶，必须「胜利收官」；若指认错误，给出否定引导继续推理。",
     criteria
       ? [
           "胜利条件：" + criteria.victoryChecklist.join("；"),
@@ -197,20 +194,19 @@ export function shouldAutoSuccessEnd(room: Room, objectives: MissionObjective[])
     return false;
   }
 
-  const chainLen = room.worldState.mysteryPlan?.clueChain.length ?? 5;
-  const step = computeClueChainStep(room);
-  const clueCount = room.worldState.investigationClues.length;
-
-  return (
-    clueCount >= MIN_CLUES_FOR_END &&
-    step >= Math.min(3, chainLen) &&
-    room.worldState.objectives.filter((item) => item.scope === "session").length > 0
-  );
+  return room.worldState.objectives.filter((item) => item.scope === "session").length > 0;
 }
 
 function isNaturalEndPlayerAction(action: string, naturalEndHint: string) {
   if (
-    /公开真相|指认真凶|揭晓真凶|结案|出示.*证据|说明动机|完整推理|投票总结/u.test(action)
+    /公开真相|指认真凶|揭晓真凶|结案|出示.*证据|说明动机|完整推理|投票总结|就是.*凶手|凶手.*就是|是.*杀的|杀人的是|作案的是|指认.*真凶|我认为.*真凶|我觉得.*凶手|真凶.*是/u.test(action)
+  ) {
+    return true;
+  }
+
+  if (
+    /指认|真凶|凶手|杀人|作案|罪魁祸首/u.test(action) &&
+    /我|认为|觉得|确定|肯定|断定|判定|认定/u.test(action)
   ) {
     return true;
   }
@@ -269,7 +265,7 @@ export function reconcileTurnOutcome(
   if (shouldAutoSuccessEnd(roomPatched, patchedObjectives)) {
     const naturalEndAction = room.worldState.resolutionCriteria?.naturalEndAction ?? "";
     const lastActionLooksLikeReveal =
-      /公开|指认|真凶|揭晓|真相|结案|说明动机|出示证据/u.test(dmResult.narration) ||
+      /公开|指认|真凶|揭晓|真相|结案|说明动机|出示证据|凶手|杀人的|作案/u.test(dmResult.narration) ||
       isNaturalEndPlayerAction(playerAction, naturalEndAction);
 
     if (gameStatus === "in_progress" && lastActionLooksLikeReveal) {

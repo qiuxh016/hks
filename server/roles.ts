@@ -268,15 +268,31 @@ export function clearLobbyBots(room: Room) {
   room.players = room.players.filter((player) => player.kind !== "bot");
 }
 
-/** 当所有真人都已选角后，把剩余角色在大厅分配给 AI 机器人 */
-export function syncLobbyBots(room: Room) {
+/**
+ * 当所有真人都已选角后，把剩余角色分配给 AI 机器人。
+ * @param forceIfAllHumansReady - 为 true 时，只要所有真人都已选角就分配 AI（用于开局时房主主动开始，不再等更多真人加入）
+ */
+export function syncLobbyBots(room: Room, forceIfAllHumansReady = false) {
   if (room.status !== "lobby") {
     return 0;
   }
 
-  if (!humansAllHaveRoles(room)) {
-    clearLobbyBots(room);
-    return 0;
+  const humans = room.players.filter((player) => player.kind === "human");
+  const allHumansHaveRoles = humans.length > 0 && humans.every((player) => player.roleSlotId);
+
+  if (forceIfAllHumansReady) {
+    // 开局时：只要所有真人都已选角，就分配 AI 补位剩余角色
+    if (!allHumansHaveRoles) {
+      clearLobbyBots(room);
+      return 0;
+    }
+  } else {
+    // 大厅选角时：只有当真人数量已达到角色总数时才分配 AI，
+    // 避免一个真人选角后 AI 就抢占剩余角色导致其他真人无法选角
+    if (!allHumansHaveRoles || humans.length < room.roleSlots.length) {
+      clearLobbyBots(room);
+      return 0;
+    }
   }
 
   let added = 0;
@@ -332,7 +348,7 @@ export function finalizeGameRoles(room: Room) {
     throw new Error(`请先选择角色：${missing.map((player) => player.name).join("、")}`);
   }
 
-  const botCount = syncLobbyBots(room);
+  const botCount = syncLobbyBots(room, true);
 
   for (const player of room.players) {
     if (!player.roleSlotId) {

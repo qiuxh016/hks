@@ -124,6 +124,7 @@ export interface AccusationVoteState {
   deadline: number;
   initiatedBy: string;
   gameInstanceId: string;
+  voterNames?: string[];
 }
 
 export interface AccusationResultPayload {
@@ -241,6 +242,8 @@ export interface Scenario {
   tone: string;
   pitch: string;
   openingHook: string;
+  /** 详细故事背景，供玩家阅读沉浸 */
+  background: string;
 }
 
 export interface InteractiveObject {
@@ -276,6 +279,7 @@ export interface WorldState {
   playerRelationships: Record<string, string>;
   memory: DmMemory;
   accusationMeta?: AccusationMeta;
+  activeAccusation?: AccusationVoteState;
 }
 
 export interface Room {
@@ -294,6 +298,7 @@ export interface Room {
   isProcessingTurn: boolean;
   players: Player[];
   messages: Message[];
+  chatPosts: ChatPost[];
   worldState: WorldState;
   createdAt: string;
 }
@@ -321,6 +326,20 @@ export interface TurnRequest {
 export interface SelectRoleRequest {
   playerId: string;
   roleSlotId: string | null;
+}
+
+/** WebRTC voice signalling */
+export interface VoicePeer {
+  playerId: string;
+  playerName: string;
+  joinedAt: number;
+}
+
+export interface VoiceChunk {
+  from: string;   // playerId
+  name: string;   // playerName
+  data: string;   // base64 encoded audio
+  ts: number;     // timestamp
 }
 
 export interface RoomSessionResponse {

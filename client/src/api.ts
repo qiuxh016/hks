@@ -88,7 +88,7 @@ export function submitTurn(roomId: string, payload: TurnRequest) {
 }
 
 export function startAccusationVote(roomId: string, payload: StartAccusationRequest) {
-  return request<{ ok: boolean }>(`/api/rooms/${roomId}/accusation`, {
+  return request<{ ok: boolean; voteState?: any }>(`/api/rooms/${roomId}/accusation`, {
     method: "POST",
     body: JSON.stringify(payload)
   });

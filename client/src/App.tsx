@@ -21,6 +21,7 @@ import {
   Room,
   RoomMode,
   Scenario,
+  ChatPost,
   getCurrentTurnPlayer,
   getTurnPhaseLabel
 } from "../../shared/types";
@@ -131,6 +132,7 @@ function App() {
   // chat
   const [chatPosts, setChatPosts] = useState<ChatMessage[]>([]);
   const [activeTab, setActiveTab] = useState<"story" | "chat">("story");
+  const [infoModal, setInfoModal] = useState<"必做" | "线索" | "日志" | "规则" | null>(null);
   const [unreadCount, setUnreadCount] = useState(0);
   const chatListRef = useRef<HTMLDivElement>(null);
   const chatTabActiveRef = useRef(false);
@@ -157,6 +159,31 @@ function App() {
   useEffect(() => {
     setFocusedSceneObjectId("");
   }, [room?.scenarioId]);
+
+  // 动态切换全局背景图
+  useEffect(() => {
+    const bgMap: Record<string, string> = {
+      "midnight-train": "/bg.png",
+      "office-dungeon": "/bg-office.png",
+      "noble-banquet": "/bg-banquet.png",
+    };
+    if (room?.scenarioId && bgMap[room.scenarioId]) {
+      document.body.style.backgroundImage = `url('${bgMap[room.scenarioId]}')`;
+      document.body.style.backgroundSize = "cover";
+      document.body.style.backgroundPosition = "center center";
+      document.body.style.backgroundRepeat = "no-repeat";
+      document.body.style.backgroundAttachment = "fixed";
+      document.body.style.backgroundColor = "transparent";
+    } else {
+      // 大厅/无房间时显示默认背景图
+      document.body.style.backgroundImage = `url('/bg-default.png')`;
+      document.body.style.backgroundSize = "cover";
+      document.body.style.backgroundPosition = "center center";
+      document.body.style.backgroundRepeat = "no-repeat";
+      document.body.style.backgroundAttachment = "fixed";
+      document.body.style.backgroundColor = "transparent";
+    }
+  }, [room?.scenarioId, room]);
 
   function resetAccusationAndVoteState() {
     setAccusationVote(null);
@@ -345,6 +372,27 @@ function App() {
           goToReviewsPage();
         }
       }
+      // 同步 chatPosts（解决 socket 不可靠导致看不到他人消息的问题）
+      if (next.chatPosts && next.chatPosts.length > 0) {
+        setChatPosts((prev) => {
+          const existingIds = new Set(prev.map((p) => p.id));
+          const newPosts = next.chatPosts.filter((p) => !existingIds.has(p.id));
+          if (newPosts.length > 0) {
+            return [...prev, ...newPosts];
+          }
+          return prev;
+        });
+      }
+      // 如果房间状态中包含 activeAccusation，同步到本地投票状态
+      if (next.worldState.activeAccusation && next.status === "in_progress") {
+        const active = next.worldState.activeAccusation;
+        setAccusationVote(active);
+        setAccusationVoters(active.voterNames ?? []);
+        setAccusationResult(null);
+      } else if (!next.worldState.activeAccusation && next.status === "in_progress") {
+        // 投票已结束或不存在
+        setAccusationVote(null);
+      }
     },
     [goToReviewsPage, isOnPostGameSubPage]
   );
@@ -443,6 +491,17 @@ function App() {
     return room.messages.filter((msg) => msg.type === "system");
   }, [room?.messages]);
 
+  /* 自动滚动 AI 主持人消息到底部 */
+  useEffect(() => {
+    const el = document.getElementById("narrator-scroll");
+    if (!el) return;
+    // 如果用户不在底部附近（正在看历史），不强制滚动
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    if (atBottom) {
+      requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
+    }
+  }, [storyMessages]);
+
   const currentTurnPlayer = room ? getCurrentTurnPlayer(room) : undefined;
   const isMyTurn = Boolean(
     room?.turnPhase === "human" &&
@@ -519,6 +578,20 @@ function App() {
     isOnPostGameSubPage
   ]);
 
+  // 定时轮询房间状态（socket 不可靠时的兜底）
+  useEffect(() => {
+    if (!room?.id || room.status !== "in_progress") return;
+    const interval = setInterval(async () => {
+      try {
+        const updated = await fetchRoom(room.id);
+        onRoomState(updated);
+      } catch {
+        // 忽略轮询错误
+      }
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [room?.id, room?.status, onRoomState]);
+
   async function handleSelectRole(roleSlotId: string) {
     if (!room || !activePlayerId) {
       return;
@@ -590,6 +663,7 @@ function App() {
         maxPlayers: gameMode === "single" ? 1 : maxPlayers
       });
       setRoom(session.room);
+      setChatPosts(session.room.chatPosts || []);
       setPlayerId(session.playerId);
       setMyPlayerName(hostName.trim());
       setRoomCode(session.room.id);
@@ -631,6 +705,7 @@ function App() {
         playerName: joinName
       });
       setRoom(session.room);
+      setChatPosts(session.room.chatPosts || []);
       setPlayerId(session.playerId);
       setMyPlayerName(joinName.trim());
       setMaxPlayers(session.room.maxPlayers);
@@ -652,6 +727,7 @@ function App() {
     clearGameplaySessionCache();
     resetAccusationAndVoteState();
     setRoom(null);
+    setChatPosts([]);
     setPlayerId("");
     setMyPlayerName("");
     setRoomCode("");
@@ -756,7 +832,7 @@ function App() {
     setAction("");
   }
 
-  function handlePublishChat(post: OutgoingChatPost) {
+  async function handlePublishChat(post: OutgoingChatPost) {
     if (!room) {
       setError("请先创建或加入房间后再发帖");
       return;
@@ -766,7 +842,36 @@ function App() {
       return;
     }
     setError("");
-    sendChatPost(room.id, me.name, post);
+
+    const payload = {
+      id: `cp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      playerName: me.name,
+      type: post.type,
+      content: post.content,
+      mediaDataUrl: post.mediaDataUrl,
+    };
+
+    // 立即把消息加到本地 chatPosts，确保界面即时显示
+    const localMsg: ChatPost = {
+      ...payload,
+      createdAt: new Date().toISOString(),
+    };
+    setChatPosts(prev => [...prev, localMsg]);
+
+    // 通过 HTTP 发送确保消息送达服务端
+    try {
+      const resp = await fetch(`/api/rooms/${room.id}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        setError(err.error || "发送失败");
+      }
+    } catch (e) {
+      setError("网络错误，发送失败");
+    }
   }
 
   const canChatPost = Boolean(room && me);
@@ -797,7 +902,14 @@ function App() {
     setError("");
 
     try {
-      await startAccusationVote(room.id, { playerId: activePlayerId });
+      const result = await startAccusationVote(room.id, { playerId: activePlayerId });
+      // 如果服务器返回了 voteState，直接设置本地状态（socket 不可用时也能工作）
+      if (result.voteState) {
+        setAccusationVote(result.voteState as AccusationVoteState);
+        setAccusationChoice("");
+        setAccusationVoters([]);
+        setAccusationResult(null);
+      }
       navigate("/outcome");
     } catch (err) {
       setError(err instanceof Error ? err.message : "发起指认真凶失败");
@@ -806,12 +918,36 @@ function App() {
     }
   }
 
-  function handleAccusationSubmit(event: FormEvent) {
+  async function handleAccusationSubmit(event: FormEvent) {
     event.preventDefault();
     if (!room || !accusationChoice) {
       return;
     }
 
+    setError("");
+
+    // 优先使用 HTTP，socket 作为补充
+    try {
+      const resp = await fetch(`/api/rooms/${room.id}/accusation-submit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ playerId: activePlayerId, accusedPlayerId: accusationChoice })
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        setError(err.error || "投票提交失败");
+      } else {
+        // 投票成功，更新本地已投票者列表
+        const data = await resp.json();
+        if (data.voterName) {
+          setAccusationVoters(prev => prev.includes(data.voterName) ? prev : [...prev, data.voterName]);
+        }
+      }
+    } catch (e) {
+      setError("网络错误，投票提交失败");
+    }
+
+    // 同时通过 socket 发送（如果连接的话）
     submitAccusation(room.id, activePlayerId, accusationChoice);
   }
 
@@ -870,18 +1006,13 @@ function App() {
     <main className="app-shell">
       <section className="hero-card">
         <p className="eyebrow">Hackathon Frame</p>
-        <h1>AI 地下城</h1>
-        <p className="hero-copy">
-          先把多人房间、聊天式冒险和 AI 主持人接起来，再慢慢把剧本、语音和实时联机做强。
-        </p>
+        <div className="hero-title-row">
+          <h1>AI 地下城</h1>
+          <button className="rules-btn" onClick={() => setInfoModal("规则")}>规则说明</button>
+        </div>
         {aiMode === "no-api-key" && (
           <p className="error-text api-banner">
             未检测到 DeepSeek API Key。请在项目根目录创建 `.env` 并设置 `DEEPSEEK_API_KEY`，然后重启 `npm run dev`。
-          </p>
-        )}
-        {aiMode === "ai-ready" && (
-          <p className="api-ready">
-            每轮真人先依次输入指令，再由 DeepSeek 驱动的 AI 机器人依次行动。
           </p>
         )}
         <BgmPlayer />
@@ -895,7 +1026,7 @@ function App() {
             </span>
           ) : (
             <>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div className="panel-controls-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <h2 style={{ margin: 0 }}>房间操作</h2>
             <button className="panel-toggle" onClick={() => setLeftCollapsed(true)} title="折叠面板">
               ▶
@@ -1006,6 +1137,7 @@ function App() {
                   `（${room.players.filter((player) => player.kind === "bot").length} AI 机器人）`}
               </p>
               <p>场景：{scenarios.find((item) => item.id === room.scenarioId)?.title ?? room.scenarioId}</p>
+
               {room.status === "in_progress" && (
                 <>
                   <p className="turn-indicator">
@@ -1020,53 +1152,7 @@ function App() {
               <p>当前地点：{room.worldState.currentLocation}</p>
               <p>紧张度：{room.worldState.tension} / 10</p>
               <p>回合数：{room.worldState.round}</p>
-              {(room.status === "in_progress" || room.status === "ended") &&
-                (room.worldState.objectives?.length ?? 0) > 0 && (
-                <div className="quest-list">
-                  {room.worldState.objectives.some((item) => item.scope === "scenario") && (
-                    <>
-                      <p className="quest-title">本剧必做（通关条件）</p>
-                      <ul>
-                        {room.worldState.objectives
-                          .filter((item) => item.scope === "scenario")
-                          .map((item) => (
-                            <li key={item.id} className={item.status === "completed" ? "objective-done" : ""}>
-                              {item.status === "completed" ? "✅ " : "⬜ "}
-                              {item.text}
-                              {item.evidence ? ` — ${item.evidence}` : ""}
-                            </li>
-                          ))}
-                      </ul>
-                    </>
-                  )}
-                  {room.worldState.objectives.some((item) => item.scope === "session") && (
-                    <>
-                      <p className="quest-title">本局必做</p>
-                      <ul>
-                        {room.worldState.objectives
-                          .filter((item) => item.scope === "session")
-                          .map((item) => (
-                            <li key={item.id} className={item.status === "completed" ? "objective-done" : ""}>
-                              {item.status === "completed" ? "✅ " : "⬜ "}
-                              {item.text}
-                              {item.evidence ? ` — ${item.evidence}` : ""}
-                            </li>
-                          ))}
-                      </ul>
-                    </>
-                  )}
-                </div>
-              )}
 
-              {room.status === "in_progress" && room.worldState.missionBrief?.naturalEndAction && (
-                <div className="natural-end-hint">
-                  <p className="quest-title">自然结案</p>
-                  <p className="muted">{room.worldState.missionBrief.naturalEndAction}</p>
-                  {room.worldState.missionBrief.suggestedRounds && (
-                    <p className="muted">建议回合：{room.worldState.missionBrief.suggestedRounds}</p>
-                  )}
-                </div>
-              )}
 
               {room.status === "ended" && (
                 <div className="outcome-sidebar-prompt">
@@ -1264,11 +1350,83 @@ function App() {
           {/* Voice Chat */}
           {room && me && (
             <VoiceChat
-              socket={socket}
               roomId={room.id}
+              playerId={me.id}
               playerName={me.name}
             />
           )}
+
+          {/* 玩家与身份 */}
+
+
+          {room?.players.map((player) => {
+            const isExpanded = expandedPlayers.has(player.id);
+            const roleName =
+              player.roleCard?.role ??
+              (player.roleSlotId
+                ? room.roleSlots.find((slot) => slot.id === player.roleSlotId)?.role
+                : "未选角");
+
+            return (
+            <article
+              key={player.id}
+              className={`player-card ${player.id === activePlayerId ? "is-me" : ""} ${
+                player.kind === "bot" ? "is-bot" : ""
+              } ${currentTurnPlayer?.id === player.id ? "is-active-turn" : ""} ${
+                isExpanded ? "is-expanded" : ""
+              }`}
+              onClick={() => {
+                setExpandedPlayers((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(player.id)) next.delete(player.id);
+                  else next.add(player.id);
+                  return next;
+                });
+              }}
+            >
+              <p className="player-name">
+                {player.name}
+                {player.isHost ? " · 房主" : ""}
+                {player.kind === "bot" ? " · AI" : ""}
+                {currentTurnPlayer?.id === player.id ? " · 行动中" : ""}
+                <span className="player-expand-arrow">{isExpanded ? " ▾" : " ▸"}</span>
+              </p>
+              <p>{roleName}</p>
+              {isExpanded && (
+                <>
+                  <p className="player-detail">
+                    <span className="player-detail-label">性格：</span>
+                    {player.roleCard?.personality ?? (player.roleSlotId ? "已选角，待开局" : "待选角")}
+                  </p>
+                  <p className="player-detail">
+                    <span className="player-detail-label">背景：</span>
+                    {player.roleCard?.backstory ??
+                      room.roleSlots.find((slot) => slot.id === player.roleSlotId)?.backstory ??
+                      "大厅选角后可见背景。"}
+                  </p>
+                  <p className="player-detail">
+                    <span className="player-detail-label">隐藏目标：</span>
+                    {player.id === activePlayerId && player.roleSlotId
+                      ? room.roleSlots.find((slot) => slot.id === player.roleSlotId)?.secretGoal
+                      : player.roleCard?.secretGoal ?? "开局后可见隐藏目标。"}
+                  </p>
+                </>
+              )}
+            </article>
+            );
+          })}
+
+          {!room && <p className="muted">玩家加入后会显示在这里。</p>}
+
+          {me && (
+            <div className="me-card">
+              <p className="eyebrow">Your POV</p>
+              <h3>{me.name}</h3>
+              <p>{me.roleCard?.role ?? "还未获得角色卡"}</p>
+            </div>
+          )}
+
+
 
           {/* Voting UI */}
           {vote && room && (
@@ -1329,8 +1487,70 @@ function App() {
           )}
         </aside>
 
-        <section className="panel story-panel">
-          <div className="panel-header">
+        {/* ── 中央场景区 ── */}
+        <section className={`panel story-panel scene-only${room?.status !== "in_progress" ? " panel-transparent" : ""}`}>
+          {room?.status === "in_progress" && (
+            <div className="scene-header-bar">
+              <span className="scene-header-title">
+                {scenarios.find((item) => item.id === room.scenarioId)?.title ?? room.scenarioId}
+              </span>
+              <div className="scene-info-btns">
+                {(["必做", "线索", "日志"] as const).map((label) => (
+                  <button
+                    key={label}
+                    type="button"
+                    className="scene-info-btn"
+                    onClick={() => setInfoModal(label)}
+                  >
+                    {label === "必做" ? "本局必做" : label === "线索" ? "线索推理" : "故事背景"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {room?.status === "in_progress" && (
+            <div className="scene-wrapper">
+              <SceneRenderer
+                room={room}
+                selectedObjectId={selectedObjectId}
+                focusedSceneObjectId={focusedSceneObjectId}
+                onSelectObject={setSelectedObjectId}
+                onFocusObject={setFocusedSceneObjectId}
+                onClearFocus={() => setFocusedSceneObjectId("")}
+                onRunAction={runAction}
+                loading={loading}
+                narratorMessages={storyMessages.filter((m) => m.type === "ai" && m.speaker === "AI主持人")}
+              />
+            </div>
+          )}
+          {room?.status !== "in_progress" && !room && (
+            <div className="empty-state">
+              <p>先创建或加入一个房间。</p>
+            </div>
+          )}
+          {room?.status === "lobby" && (
+            <div className="empty-state">
+              <p>等待房主开局…</p>
+            </div>
+          )}
+        </section>
+
+        {/* ── 右侧推理交互区 ── */}
+        <aside className={`panel interaction-panel${rightCollapsed ? " collapsed" : ""}`}>
+          {rightCollapsed ? (
+            <span className="panel-expand-tab" onClick={() => setRightCollapsed(false)}>
+              推理交互区 ▶
+            </span>
+          ) : (
+            <>
+          <div className="panel-controls-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <h2 style={{ margin: 0 }}>推理交互区</h2>
+            <button className="panel-toggle" onClick={() => setRightCollapsed(true)} title="折叠面板">
+              ◀
+            </button>
+          </div>
+
+          <div className="panel-header" style={{ flexShrink: 0 }}>
             <div className="tab-bar">
               <button
                 type="button"
@@ -1350,27 +1570,14 @@ function App() {
                 )}
               </button>
             </div>
-            <span>{activeTab === "story" ? (isMyTurn ? "轮到你了，请输入行动" : "等待其他成员行动") : "自由聊天，不影响剧情"}</span>
+            <span>{activeTab === "story" ? (isMyTurn ? "轮到你了" : "等待行动") : "自由聊天"}</span>
           </div>
 
           {activeTab === "story" && (
             <>
-              {room?.status === "in_progress" && (
-                <SceneRenderer
-                  room={room}
-                  selectedObjectId={selectedObjectId}
-                  focusedSceneObjectId={focusedSceneObjectId}
-                  onSelectObject={setSelectedObjectId}
-                  onFocusObject={setFocusedSceneObjectId}
-                  onClearFocus={() => setFocusedSceneObjectId("")}
-                  onRunAction={runAction}
-                  loading={loading}
-                />
-              )}
-
               <div className="story-scroll-area" ref={messageListRef}>
                 <div className="message-list">
-                  {storyMessages.map((message) => (
+                  {storyMessages.filter(msg => !(msg.type === "ai" && msg.speaker === AI_HOST_SPEAKER)).map((message) => (
                     <article
                       key={message.id}
                       className={`message message-${message.type} ${
@@ -1403,7 +1610,6 @@ function App() {
                   {!room && (
                     <div className="empty-state">
                       <p>先创建或加入一个房间。</p>
-                      <p>这版重点是把多人剧本流程跑通，不先卷复杂战斗系统。</p>
                     </div>
                   )}
                 </div>
@@ -1484,142 +1690,141 @@ function App() {
                 ))}
               </div>
 
-              <ChatComposer
-                canPost={canChatPost}
-                hint={chatComposerHint}
-                quickEmojis={quickEmojis}
-                onPublish={handlePublishChat}
-                onError={setError}
-              />
-            </>
-          )}
-        </section>
-
-        <aside className={`panel roster-panel${rightCollapsed ? " collapsed" : ""}`}>
-          {rightCollapsed ? (
-            <span className="panel-expand-tab" onClick={() => setRightCollapsed(false)}>
-              玩家与身份 ▶
-            </span>
-          ) : (
-            <>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <h2 style={{ margin: 0 }}>玩家与身份</h2>
-            <button className="panel-toggle" onClick={() => setRightCollapsed(true)} title="折叠面板">
-              ◀
-            </button>
-          </div>
-
-          {(room?.worldState.investigationClues?.length ?? room?.worldState.clues?.length ?? 0) >
-            0 && (
-            <div className="clue-card">
-              <p className="eyebrow">推理线索</p>
-              <p className="muted clue-hint">线索可串联推理，请对照任务目标思考关联。</p>
-              <ul className="clue-list">
-                {(room?.worldState.investigationClues?.length
-                  ? room.worldState.investigationClues
-                  : (room?.worldState.clues ?? []).map((text, index) => ({
-                      id: `legacy-${index}`,
-                      text,
-                      round: 0,
-                      source: "场景",
-                      relatesTo: "core-truth"
-                    }))
-                ).map((clue) => (
-                  <li key={clue.id}>
-                    <span className="clue-text">{clue.text}</span>
-                    <span className="clue-meta">
-                      R{clue.round} · {clue.relatesTo === "core-truth" ? "核心真相" : clue.relatesTo}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {room?.players.map((player) => {
-            const isExpanded = expandedPlayers.has(player.id);
-            const roleName =
-              player.roleCard?.role ??
-              (player.roleSlotId
-                ? room.roleSlots.find((slot) => slot.id === player.roleSlotId)?.role
-                : "未选角");
-
-            return (
-            <article
-              key={player.id}
-              className={`player-card ${player.id === activePlayerId ? "is-me" : ""} ${
-                player.kind === "bot" ? "is-bot" : ""
-              } ${currentTurnPlayer?.id === player.id ? "is-active-turn" : ""} ${
-                isExpanded ? "is-expanded" : ""
-              }`}
-              onClick={() => {
-                setExpandedPlayers((prev) => {
-                  const next = new Set(prev);
-                  if (next.has(player.id)) next.delete(player.id);
-                  else next.add(player.id);
-                  return next;
-                });
-              }}
-            >
-              <p className="player-name">
-                {player.name}
-                {player.isHost ? " · 房主" : ""}
-                {player.kind === "bot" ? " · AI" : ""}
-                {currentTurnPlayer?.id === player.id ? " · 行动中" : ""}
-                <span className="player-expand-arrow">{isExpanded ? " ▾" : " ▸"}</span>
-              </p>
-              <p>{roleName}</p>
-              {isExpanded && (
-                <>
-                  <p className="player-detail">
-                    <span className="player-detail-label">性格：</span>
-                    {player.roleCard?.personality ?? (player.roleSlotId ? "已选角，待开局" : "待选角")}
-                  </p>
-                  <p className="player-detail">
-                    <span className="player-detail-label">背景：</span>
-                    {player.roleCard?.backstory ??
-                      room.roleSlots.find((slot) => slot.id === player.roleSlotId)?.backstory ??
-                      "大厅选角后可见背景。"}
-                  </p>
-                  <p className="player-detail">
-                    <span className="player-detail-label">隐藏目标：</span>
-                    {player.id === activePlayerId && player.roleSlotId
-                      ? room.roleSlots.find((slot) => slot.id === player.roleSlotId)?.secretGoal
-                      : player.roleCard?.secretGoal ?? "开局后可见隐藏目标。"}
-                  </p>
-                </>
-              )}
-            </article>
-            );
-          })}
-
-          {!room && <p className="muted">玩家加入后会显示在这里。</p>}
-
-          {me && (
-            <div className="me-card">
-              <p className="eyebrow">Your POV</p>
-              <h3>{me.name}</h3>
-              <p>{me.roleCard?.role ?? "还未获得角色卡"}</p>
-            </div>
-          )}
-
-          {room && systemMessages.length > 0 && (
-            <div className="system-log-section">
-              <p className="eyebrow">系统日志</p>
-              <div className="system-log-list">
-                {systemMessages.slice().reverse().map((msg) => (
-                  <div key={msg.id} className="system-log-item">
-                    <div className="syslog-speaker">{msg.speaker}</div>
-                    <div className="syslog-content">{msg.content}</div>
-                  </div>
-                ))}
+              <div className="chat-composer-dock">
+                <ChatComposer
+                  canPost={canChatPost}
+                  hint={chatComposerHint}
+                  quickEmojis={quickEmojis}
+                  onPublish={handlePublishChat}
+                  onError={setError}
+                />
               </div>
-            </div>
+            </>
           )}
             </>
           )}
         </aside>
       </section>
+
+      {/* 信息弹窗 */}
+      {(infoModal === "规则" || (infoModal && room)) && (
+        <div className="info-modal-overlay" onClick={() => setInfoModal(null)}>
+          <div className="info-modal" onClick={(e) => e.stopPropagation()}>
+            <button className="info-modal-close" onClick={() => setInfoModal(null)}>×</button>
+            <h3 className="info-modal-title">
+              {infoModal === "必做" ? "本局必做" : infoModal === "线索" ? "线索推理" : infoModal === "日志" ? "故事背景" : "规则说明"}
+            </h3>
+            <div className="info-modal-body">
+              {infoModal === "必做" && (
+                <>
+                  {room?.worldState.objectives && room?.worldState.objectives.filter((o: any) => o.scope === "session").length > 0 ? (
+                    <ul className="modal-quest-list">
+                      {room?.worldState.objectives
+                        .filter((o: any) => o.scope === "session")
+                        .map((o: any, i: number) => (
+                          <li key={o.id || i} className={o.status === "completed" ? "quest-done" : "quest-pending"}>
+                            <span className="quest-check">{o.status === "completed" ? "✅" : "⬜"}</span>
+                            <span className="quest-text">{o.text}</span>
+                            {o.evidence && <span className="quest-evidence">—— {o.evidence}</span>}
+                          </li>
+                        ))}
+                    </ul>
+                  ) : (room?.worldState.quests && room?.worldState.quests.length > 0) ? (
+                    <ul className="modal-quest-list">
+                      {room?.worldState.quests.map((q: string, i: number) => (
+                        <li key={i} className="quest-pending">
+                          <span className="quest-check">⬜</span>
+                          <span className="quest-text">{q}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="modal-empty">暂无任务目标，游戏开始后将更新。</p>
+                  )}
+                </>
+              )}
+              {infoModal === "线索" && (
+                <>
+                  {(room?.worldState.investigationClues?.length ?? room?.worldState.clues?.length ?? 0) > 0 ? (
+                    <ul className="modal-clue-list">
+                      {(room?.worldState.investigationClues ?? room?.worldState.clues ?? []).map((clue: any, i: number) => (
+                        <li key={i}>
+                          <span className="clue-text">{typeof clue === "string" ? clue : clue.text}</span>
+                          {typeof clue !== "string" && clue.source && <span className="clue-founder">—— {clue.source}</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="modal-empty">暂无线索，调查后将在此显示。</p>
+                  )}
+                </>
+              )}
+              {infoModal === "日志" && (
+                <>
+                  {(() => {
+                    const sc = scenarios.find((s: any) => s.id === room?.scenarioId);
+                    return sc?.background ? (
+                      <div className="modal-briefing" style={{whiteSpace:'pre-line',fontSize:'0.95rem',lineHeight:1.9}}>
+                        {sc.background}
+                      </div>
+                    ) : (
+                      <p className="modal-empty">暂无故事背景。</p>
+                    );
+                  })()}
+                </>
+              )}
+              {infoModal === "规则" && (
+                <div className="rules-content">
+                  <h4>一、游戏概述</h4>
+                  <p>AI 地下城是一款由 AI 主持人驱动的多人在线剧本杀游戏。玩家在虚拟场景中扮演不同角色，通过调查、对话和推理，找出隐藏在众人中的真凶。</p>
+
+                  <h4>二、剧本选择</h4>
+                  <ul>
+                    <li><strong>午夜列车</strong>（悬疑推理）——被困在深夜列车上，每隔一段时间就会有人离奇死去</li>
+                    <li><strong>社畜地下城</strong>（黑色幽默）——在荒诞公司求生，终极 boss 是从不露面的 CEO</li>
+                    <li><strong>贵族晚宴</strong>（宫斗修罗场）——受邀参加贵族晚宴，每个人都带着见不得人的秘密</li>
+                  </ul>
+
+                  <h4>三、游戏流程</h4>
+                  <ol>
+                    <li><strong>创建/加入房间</strong>：房主选择剧本创建房间，其他玩家通过房间号或邀请链接加入</li>
+                    <li><strong>选择角色</strong>：所有真人玩家进入房间后，从可用角色中选择自己的身份。所有真人选完角色后，剩余角色由 AI 机器人补位</li>
+                    <li><strong>故事开场</strong>：AI 主持人根据剧本设定展开剧情，向所有玩家介绍背景和初始线索</li>
+                    <li><strong>回合制行动</strong>：每轮真人玩家依次输入指令（调查、对话、搜证等），然后 AI 机器人依次行动</li>
+                    <li><strong>指认真凶</strong>：任意时刻可发起投票指认，所有真人玩家投票，多数票决</li>
+                  </ol>
+
+                  <h4>四、本局必做</h4>
+                  <p>每个剧本有一组"本局必做"任务，玩家可以在游戏中随时查看进度。当玩家完成某个必做任务时，清单会自动打勾标记。</p>
+
+                  <h4>五、胜利条件</h4>
+                  <p>当满足以下<strong>两个条件</strong>时，剧本杀胜利收官：</p>
+                  <ol>
+                    <li>所有"本局必做"任务全部完成（清单全部打勾）</li>
+                    <li>玩家在与 AI 主持人对话时<strong>成功指出真凶</strong></li>
+                  </ol>
+                  <p>如果指认了错误的角色，AI 主持人会给出否定证据引导继续推理。</p>
+
+                  <h4>六、交流与互动</h4>
+                  <ul>
+                    <li><strong>推理交互区</strong>：右侧面板的"交流"标签页可以发送文字消息，与房间内其他玩家实时交流</li>
+                    <li><strong>故事流</strong>：右侧面板的"故事流"标签页展示 AI 主持人的叙事和剧情推进</li>
+                    <li><strong>中间栏</strong>：AI 主持人发布的重要信息会叠加显示在场景图片上，可上下滚动查看</li>
+                  </ul>
+
+                  <h4>七、投票规则</h4>
+                  <ul>
+                    <li>任意真人玩家可以发起"指认真凶投票"</li>
+                    <li>所有真人玩家需在倒计时内完成投票</li>
+                    <li>多数票决定指认结果</li>
+                    <li>指认正确 = 推理成功；指认错误 = 推理失败</li>
+                  </ul>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

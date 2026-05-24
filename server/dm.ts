@@ -74,11 +74,22 @@ export type OpeningPackage = {
 };
 
 function extractSection(raw: string, sectionTitle: string) {
-  const pattern = new RegExp(
-    `##\\s*${sectionTitle}\\s*\\n+([\\s\\S]*?)(?=\\n##\\s*|\\n【地点|$)`,
+  // Try ## heading format first
+  const headingPattern = new RegExp(
+    `##\\s*${sectionTitle}\\s*\\n+([\\s\\S]*?)(?=\\n##\\s*|\\n【[^\n】]+】\\s*\\n|\\n【地点|$)`,
     "i"
   );
-  const match = raw.match(pattern);
+  let match = raw.match(headingPattern);
+  if (match) {
+    return match[1]?.trim() ?? "";
+  }
+
+  // Try 【sectionTitle】 format
+  const bracketPattern = new RegExp(
+    `【${sectionTitle}】\\s*\\n+([\\s\\S]*?)(?=\\n【[^\n】]+】\\s*\\n|\\n##\\s*|\\n【地点|$)`,
+    "u"
+  );
+  match = raw.match(bracketPattern);
   return match?.[1]?.trim() ?? "";
 }
 
@@ -519,7 +530,7 @@ function parseObjectiveJudgments(raw: string) {
   const updates: TurnResolution["objectiveUpdates"] = [];
 
   for (const line of block.split("\n")) {
-    const trimmed = line.trim();
+    const trimmed = line.trim().replace(/^[-•*\d.)、\s]+/, "");
     if (!trimmed) {
       continue;
     }
@@ -950,7 +961,7 @@ function buildSystemPrompt(room: Room) {
     "4. 本局必做须按 session-1→2→3 顺序完成；未完成的 session 不得跳关标为已完成。",
     "5. 禁止引入蓝图外的无关人物/道具/超自然设定；红鲱鱼仅限蓝图列出的可误导项。",
     "6. 非调查行动可「线索更新：无新增」；正文 100-220 字；呼应历史操作。",
-    "7. 当【结案进度】显示全部必做已完成：玩家若执行了自然结案动作（公开真相/指认真凶/出示证据），必须「胜利收官」并揭晓隐藏真相。",
+    "7. 明确的胜利收官条件：当所有本局必做（session）全部完成时，若玩家在对话中成功指认了真凶（说出角色名+指明其是凶手/作案者），你必须立即「胜利收官」并揭晓隐藏真相。注意：玩家指认错误角色时不收官，而是给出否定证据引导其继续推理。",
     "8. 任务「已完成」须在正文中有明确物证或对话依据；不可凭感觉勾选。",
     "9. 不要代替玩家做决定。",
     "10. 正文叙事必须是纯中文+emoji：禁止 Markdown（不要 **、---、#、###、【】、|、* 列表符）。结构化判定写在正文之后的独立块里，不要混进叙事。",
@@ -1024,7 +1035,7 @@ function buildConversationMessages(room: Room, player: Player, action: string): 
       "1) 正文叙事 100-220 字（纯文本+emoji，禁止任何 Markdown 或【】符号）",
       "2) 【任务判定】session-1：已完成｜具体依据（仅当正文已满足该任务的可验证条件）",
       "3) 【线索更新】新增：…｜关联：session-N｜衔接：…｜来源：… ；无则写「无新增」",
-      "4) 【对局状态】进行中｜胜利收官｜失败收官（全部必做完成且玩家公开指认/结案时选胜利收官）",
+      "4) 【对局状态】进行中｜胜利收官｜失败收官（全部本局必做完成+玩家成功指认真凶时选胜利收官；指认错误则仍为进行中，并在叙事中给出否定引导）",
       "5) 若收官：【收官说明】真相揭晓、本局/本剧完成情况、收官叙事",
       "6) 最后一行：【地点：xxx】"
     ].join("\n")

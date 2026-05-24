@@ -127,13 +127,24 @@ export function useSocket(opts: UseSocketOptions) {
 
   const sendChatPost = useCallback((roomId: string, playerName: string, post: Omit<ChatPostPayload, "id" | "playerName">) => {
     const id = `post_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    socketRef.current?.emit("chat:post", roomId, {
+    const payload = {
       id,
       playerName,
       type: post.type,
       content: post.content,
       mediaDataUrl: post.mediaDataUrl
-    });
+    };
+    console.log("[sendChatPost] emitting chat:post, socket connected:", !!socketRef.current?.connected, "roomId:", roomId, "payload:", payload);
+    socketRef.current?.emit("chat:post", roomId, payload);
+    // Fallback: 如果 socket 未连接，通过 HTTP API 发送
+    if (!socketRef.current?.connected) {
+      console.warn("[sendChatPost] Socket not connected, using HTTP fallback");
+      fetch(`/api/rooms/${roomId}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      }).catch(err => console.error("[sendChatPost] HTTP fallback failed:", err));
+    }
     return id;
   }, []);
 

@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import cors from "cors";
@@ -9,8 +10,10 @@ import { Server } from "socket.io";
 import { validateChatPost } from "./chatRelay";
 import {
   AccusationOption,
+  AccusationVoteState,
   CreateRoomRequest,
   ChatPostPayload,
+  ChatPost,
   JoinRoomRequest,
   SelectRoleRequest,
   PlayerAgentAssistRequest,
@@ -25,6 +28,20 @@ import {
   finalizeAccusationVote
 } from "./accusation";
 import { registerBehaviorReviewBroadcaster } from "./behaviorReview";
+// ─── Voice relay store ───
+// roomId → { chunks: VoiceChunk[], voicePeers: Map<playerId, {name, joinedAt}> }
+const voiceState = new Map<string, {
+  chunks: any[];
+  voicePeers: Map<string, { name: string; joinedAt: number }>;
+}>();
+
+function getOrCreateVoiceState(roomId: string) {
+  if (!voiceState.has(roomId)) {
+    voiceState.set(roomId, { chunks: [], voicePeers: new Map() });
+  }
+  return voiceState.get(roomId)!;
+}
+
 import { registerMysteryRevealBroadcaster } from "./mysteryReveal";
 import { buildInitialSceneState, buildOpening, formatGameEndBrief } from "./dm";
 import { touchChatActivity } from "./memory";
@@ -55,7 +72,7 @@ dotenv.config({
 
 const app = express();
 const server = http.createServer(app);
-const port = Number(process.env.PORT ?? 8787);
+const port = Number(process.env.DEPLOY_RUN_PORT ?? process.env.PORT ?? 8787);
 
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
@@ -141,13 +158,21 @@ function startAccusationVote(roomId: string, initiatedBy: string) {
 
   const initiator = room.players.find((player) => player.id === initiatedBy);
 
-  io.to(roomId).emit("accusation:start", {
+  const voteState: AccusationVoteState = {
     question: "指认真凶：你认为谁是本案真凶？（多数票决，直接结案）",
     options,
     deadline: Date.now() + ACCUSATION_VOTE_MS,
     initiatedBy: initiator?.name ?? "某玩家",
-    gameInstanceId: room.gameInstanceId
+    gameInstanceId: room.gameInstanceId,
+    voterNames: []
+  };
+
+  // 将投票状态存入 room.worldState，确保所有玩家都能通过房间状态获取
+  updateRoom(roomId, (draft) => {
+    draft.worldState.activeAccusation = voteState;
   });
+
+  io.to(roomId).emit("accusation:start", voteState);
 
   appendMessages(roomId, [
     {
@@ -180,6 +205,11 @@ async function finalizeAccusationVoteFlow(roomId: string, expectedGameInstanceId
   clearTimeout(vote.timeout);
   activeAccusationVotes.delete(roomId);
 
+  // 清除 room.worldState 中的投票状态
+  updateRoom(roomId, (draft) => {
+    draft.worldState.activeAccusation = undefined;
+  });
+
   const result = await finalizeAccusationVote(roomId, vote.votes, vote.options);
   if (!result) {
     appendMessages(roomId, [
@@ -189,6 +219,9 @@ async function finalizeAccusationVoteFlow(roomId: string, expectedGameInstanceId
         content: "指认真凶投票无效（无人投票），游戏继续。"
       }
     ]);
+    updateRoom(roomId, (draft) => {
+      draft.worldState.activeAccusation = undefined;
+    });
     broadcastRoom(roomId);
     return;
   }
@@ -331,7 +364,9 @@ function finalizeVote(roomId: string) {
 
 // ----- socket.io (real-time communication) -----
 io.on("connection", (socket) => {
+  console.log("[socket] connected:", socket.id);
   socket.on("room:join", (roomId: string) => {
+    console.log("[socket] room:join", socket.id, roomId);
     const room = getRoom(roomId);
     if (!room) {
       socket.emit("error", "房间不存在");
@@ -374,10 +409,24 @@ io.on("connection", (socket) => {
 
       vote.votes.set(payload.playerId, payload.accusedPlayerId);
 
+      // 更新 room.worldState.activeAccusation 的投票者列表
+      updateRoom(payload.roomId, (draft) => {
+        if (draft.worldState.activeAccusation) {
+          if (!draft.worldState.activeAccusation.voterNames) {
+            draft.worldState.activeAccusation.voterNames = [];
+          }
+          if (!draft.worldState.activeAccusation.voterNames.includes(player.name)) {
+            draft.worldState.activeAccusation.voterNames.push(player.name);
+          }
+        }
+      });
+
       io.to(payload.roomId).emit("accusation:update", {
         voterName: player.name,
         voted: true
       });
+
+      broadcastRoom(payload.roomId);
 
       const humanPlayers = room?.players.filter((item) => item.kind === "human") ?? [];
       const allVoted = humanPlayers.every((item) => vote.votes.has(item.id));
@@ -425,8 +474,10 @@ io.on("connection", (socket) => {
 
   // chat relay
   socket.on("chat:post", (roomId: string, payload: ChatPostPayload) => {
+    console.log("[chat:post] received:", roomId, payload?.playerName, payload?.type, (payload?.content || "").slice(0, 30));
     const room = getRoom(roomId);
     if (!room) {
+      console.log("[chat:post] room not found:", roomId);
       socket.emit("error", "房间不存在");
       return;
     }
@@ -437,15 +488,18 @@ io.on("connection", (socket) => {
       return;
     }
 
-    updateRoom(roomId, (draft) => {
-      touchChatActivity(draft);
-    });
-
-    io.to(roomId).emit("chat:post", {
+    const chatPost = {
       ...payload,
       type: payload.type ?? "text",
       createdAt: new Date().toISOString()
+    };
+
+    updateRoom(roomId, (draft) => {
+      touchChatActivity(draft);
+      draft.chatPosts.push(chatPost);
     });
+
+    io.to(roomId).emit("chat:post", chatPost);
   });
 
   socket.on("chat:message", (roomId: string, payload: { playerName: string; content: string; id: string }) => {
@@ -471,7 +525,7 @@ io.on("connection", (socket) => {
 // ----- REST API -----
 
 function getLocalIPs(): string[] {
-  const interfaces = require("node:os").networkInterfaces();
+  const interfaces = os.networkInterfaces();
   const ips: string[] = [];
   for (const name of Object.keys(interfaces)) {
     const net = interfaces[name];
@@ -540,6 +594,36 @@ app.patch("/api/rooms/:roomId/settings", (req, res) => {
       error: error instanceof Error ? error.message : "更新房间设置失败"
     });
   }
+});
+
+/* ── HTTP chat fallback ── */
+app.post("/api/rooms/:roomId/chat", (req, res) => {
+  try {
+    const { roomId } = req.params;
+    const payload = req.body as ChatPostPayload;
+    const room = getRoom(roomId);
+    if (!room) { res.status(404).json({ error: "Room not found" }); return; }
+    const validationError = validateChatPost(payload);
+    if (validationError) { res.status(400).json({ error: validationError }); return; }
+    if (!room.worldState) {
+      (room as any).worldState = { memory: { storySummary: "", playerActions: {}, memorableMoments: [], lastTeaseAt: null, lastActionAt: null, lastChatAt: new Date().toISOString(), botMinds: {}, playerAgents: {} } };
+    } else if (!room.worldState.memory) {
+      room.worldState.memory = { storySummary: "", playerActions: {}, memorableMoments: [], lastTeaseAt: null, lastActionAt: null, lastChatAt: new Date().toISOString(), botMinds: {}, playerAgents: {} };
+    }
+    const chatPost: ChatPost = {
+      id: payload.id,
+      playerName: payload.playerName ?? "匿名",
+      type: payload.type ?? "text",
+      content: payload.content ?? "",
+      mediaDataUrl: payload.mediaDataUrl,
+      createdAt: new Date().toISOString(),
+    };
+    if (!room.chatPosts) room.chatPosts = [];
+    room.chatPosts.push(chatPost);
+    touchChatActivity(room);
+    io.to(roomId).emit("chat:post", chatPost);
+    res.status(201).json(chatPost);
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
 app.patch("/api/rooms/:roomId/role", (req, res) => {
@@ -694,8 +778,13 @@ app.post("/api/rooms/:roomId/start", async (req, res) => {
       ].join("\n");
     });
 
+    /* 逐条发送开场消息 */
+    for (const msg of opening.messages) {
+      appendMessages(room.id, [msg]);
+      await new Promise((r) => setTimeout(r, 500));
+    }
+
     appendMessages(room.id, [
-      ...opening.messages,
       {
         type: "system" as const,
         speaker: "系统",
@@ -707,6 +796,7 @@ app.post("/api/rooms/:roomId/start", async (req, res) => {
 
     const roomStarted = getRoom(room.id);
     if (roomStarted && roomStarted.worldState.investigationClues.length > 0) {
+      await new Promise((r) => setTimeout(r, 400));
       const clueLines = roomStarted.worldState.investigationClues
         .map((item) => `· ${item.text}`)
         .join("\n");
@@ -761,10 +851,81 @@ app.post("/api/rooms/:roomId/accusation", async (req, res) => {
     await ensureAccusationMeta(room.id);
     startAccusationVote(room.id, body.playerId);
 
-    return res.json({ ok: true });
+    // 返回投票状态，供前端在 socket 不可用时直接使用
+    const options = buildAccusationOptions(room);
+    const voteState: AccusationVoteState = {
+      question: "指认真凶：你认为谁是本案真凶？（多数票决，直接结案）",
+      options,
+      deadline: Date.now() + ACCUSATION_VOTE_MS,
+      initiatedBy: player.name,
+      gameInstanceId: room.gameInstanceId ?? ""
+    };
+
+    return res.json({ ok: true, voteState });
   } catch (error) {
     return res.status(400).json({
       error: error instanceof Error ? error.message : "发起指认真凶失败"
+    });
+  }
+});
+
+/* ── HTTP fallback: accusation submit ── */
+app.post("/api/rooms/:roomId/accusation-submit", async (req, res) => {
+  try {
+    const { roomId } = req.params;
+    const { playerId, accusedPlayerId } = req.body as { playerId: string; accusedPlayerId: string };
+
+    const vote = activeAccusationVotes.get(roomId);
+    if (!vote) {
+      return res.status(400).json({ error: "当前没有进行中的指认真凶投票" });
+    }
+
+    const room = getRoom(roomId);
+    if (!room || room.gameInstanceId !== vote.gameInstanceId) {
+      return res.status(400).json({ error: "本局指认投票已失效" });
+    }
+
+    const player = room.players.find((item) => item.id === playerId);
+    if (!player || player.kind !== "human") {
+      return res.status(400).json({ error: "仅真人玩家可参与指认真凶投票" });
+    }
+
+    if (!vote.options.some((option) => option.playerId === accusedPlayerId)) {
+      return res.status(400).json({ error: "无效的指认对象" });
+    }
+
+    vote.votes.set(playerId, accusedPlayerId);
+
+    // 更新 room.worldState.activeAccusation 的投票者列表
+    updateRoom(roomId, (draft) => {
+      if (draft.worldState.activeAccusation) {
+        if (!draft.worldState.activeAccusation.voterNames) {
+          draft.worldState.activeAccusation.voterNames = [];
+        }
+        if (!draft.worldState.activeAccusation.voterNames.includes(player.name)) {
+          draft.worldState.activeAccusation.voterNames.push(player.name);
+        }
+      }
+    });
+
+    io.to(roomId).emit("accusation:update", {
+      voterName: player.name,
+      voted: true
+    });
+
+    broadcastRoom(roomId);
+
+    const humanPlayers = room.players.filter((item) => item.kind === "human");
+    const allVoted = humanPlayers.every((item) => vote.votes.has(item.id));
+
+    if (allVoted) {
+      void finalizeAccusationVoteFlow(roomId, vote.gameInstanceId);
+    }
+
+    return res.json({ ok: true, voterName: player.name });
+  } catch (error) {
+    return res.status(400).json({
+      error: error instanceof Error ? error.message : "投票失败"
     });
   }
 });
@@ -822,6 +983,71 @@ app.post("/api/rooms/:roomId/turn", async (req, res) => {
       error: error instanceof Error ? error.message : "提交行动失败"
     });
   }
+});
+
+// ----- serve frontend static files (production) -----
+const distPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist");
+app.use(express.static(distPath));
+
+// ─── Voice signalling API ───
+// POST /api/rooms/:roomId/voice/join  - join voice channel
+app.post("/api/rooms/:roomId/voice/join", (req, res) => {
+  const { roomId } = req.params;
+  const { playerId, playerName } = req.body as { playerId: string; playerName: string };
+  const room = getRoom(roomId);
+  if (!room) { res.status(404).json({ error: "Room not found" }); return; }
+  const vs = getOrCreateVoiceState(roomId);
+  vs.voicePeers.set(playerId, { name: playerName, joinedAt: Date.now() });
+  io.to(roomId).emit("voice:peer-joined", { playerId, playerName });
+  const peers = Array.from(vs.voicePeers.entries()).map(([id, v]) => ({ playerId: id, playerName: v.name, joinedAt: v.joinedAt }));
+  res.json({ ok: true, peers });
+});
+
+// POST /api/rooms/:roomId/voice/leave  - leave voice channel
+app.post("/api/rooms/:roomId/voice/leave", (req, res) => {
+  const { roomId } = req.params;
+  const { playerId } = req.body as { playerId: string };
+  const vs = voiceState.get(roomId);
+  if (vs) {
+    vs.voicePeers.delete(playerId);
+    io.to(roomId).emit("voice:peer-left", { playerId });
+  }
+  res.json({ ok: true });
+});
+
+// GET /api/rooms/:roomId/voice/peers  - get current voice peers
+app.get("/api/rooms/:roomId/voice/peers", (req, res) => {
+  const { roomId } = req.params;
+  const vs = voiceState.get(roomId);
+  if (!vs) { res.json({ peers: [] }); return; }
+  const peers = Array.from(vs.voicePeers.entries()).map(([id, v]) => ({ playerId: id, playerName: v.name, joinedAt: v.joinedAt }));
+  res.json({ peers });
+});
+
+// POST /api/rooms/:roomId/voice/chunk  - upload audio chunk
+app.post("/api/rooms/:roomId/voice/chunk", (req, res) => {
+  const { roomId } = req.params;
+  const chunk = req.body as { from: string; name: string; data: string; ts: number };
+  const vs = getOrCreateVoiceState(roomId);
+  vs.chunks.push(chunk);
+  // Keep only last 200 chunks to prevent memory bloat
+  if (vs.chunks.length > 200) vs.chunks = vs.chunks.slice(-200);
+  res.json({ ok: true });
+});
+
+// GET /api/rooms/:roomId/voice/chunks?since=<index>  - poll for audio chunks
+app.get("/api/rooms/:roomId/voice/chunks", (req, res) => {
+  const { roomId } = req.params;
+  const since = parseInt(req.query.since as string) || 0;
+  const vs = voiceState.get(roomId);
+  if (!vs) { res.json({ chunks: [], nextIndex: 0 }); return; }
+  const chunks = vs.chunks.slice(since);
+  res.json({ chunks, nextIndex: vs.chunks.length });
+});
+
+// SPA fallback: all non-API, non-socket.io routes serve index.html
+app.get("*", (_req, res) => {
+  res.sendFile(path.join(distPath, "index.html"));
 });
 
 server.listen(port, () => {

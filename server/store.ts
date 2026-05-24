@@ -265,6 +265,7 @@ export function createRoom(hostName: string, scenarioId: ScenarioId, maxPlayers 
         content: `${hostName} 创建了房间（${capped} 人局），等待玩家加入。`
       })
     ],
+    chatPosts: [],
     worldState: createWorldState(),
     createdAt: now()
   };
