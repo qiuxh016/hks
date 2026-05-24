@@ -13,12 +13,13 @@ import {
 } from "../shared/types";
 import { buildInitialSceneState, buildOpening, buildRoleCards } from "./dm";
 import { startTeaseScheduler } from "./teaseScheduler";
-import { executeHumanTurn, kickoffTurnCycle } from "./turnFlow";
+import { executeHumanTurn, kickoffTurnCycle, setFastForward } from "./turnFlow";
 import { scenarios } from "./scenarios";
 import {
   appendMessages,
   applyBotDisplayNames,
   assignRoleCards,
+  broadcastRoom,
   countHumanPlayers,
   createRoom,
   dedupeHumanPlayers,
@@ -27,6 +28,7 @@ import {
   initTurnOrder,
   joinRoom,
   replaceSceneObjects,
+  setBroadcastFn,
   setProcessingTurn,
   togglePlayerReady,
   updateRoom,
@@ -48,13 +50,11 @@ const io = new Server(server, {
 app.use(cors());
 app.use(express.json());
 
-// ----- broadcast helper -----
-function broadcastRoom(roomId: string) {
+// wire store broadcast to socket.io
+setBroadcastFn((roomId: string) => {
   const room = getRoom(roomId);
-  if (room) {
-    io.to(roomId).emit("room:state", room);
-  }
-}
+  if (room) io.to(roomId).emit("room:state", room);
+});
 
 // ----- active votes -----
 const activeVotes = new Map<string, {
@@ -84,24 +84,25 @@ function triggerVote(roomId: string) {
   };
 
   const q = questions[room.scenarioId] ?? questions["midnight-train"];
+  const options = [...q.options, "🙅 弃权"];
 
   const votes = new Map<string, string>();
   const timeout = setTimeout(() => {
     finalizeVote(roomId);
   }, 30000);
 
-  activeVotes.set(roomId, { question: q.question, options: q.options, votes, timeout });
+  activeVotes.set(roomId, { question: q.question, options, votes, timeout });
 
   io.to(roomId).emit("vote:start", {
     question: q.question,
-    options: q.options,
+    options,
     deadline: Date.now() + 30000
   });
 
   appendMessages(roomId, [{
     type: "system",
     speaker: "DM",
-    content: `⚡ 投票开始：${q.question}（30 秒内投票）`
+    content: `⚡ 投票开始：${q.question}（30 秒内投票，可选弃权）`
   }]);
 
   broadcastRoom(roomId);
@@ -120,24 +121,39 @@ function finalizeVote(roomId: string) {
     if (tally[choice] !== undefined) tally[choice]++;
   }
 
+  const totalVotes = Object.values(tally).reduce((s, c) => s + c, 0);
+
   const resultText = Object.entries(tally)
     .map(([opt, count]) => `${opt}：${count} 票`)
     .join("，");
 
-  const winner = Object.entries(tally).sort((a, b) => b[1] - a[1])[0];
+  let winner: string | null = null;
+  let narrative: string;
 
-  io.to(roomId).emit("vote:result", { tally, winner: winner[0] });
+  if (totalVotes === 0) {
+    narrative = "没有人投票，看来大家对这个话题还没有明确的想法。故事继续推进。";
+  } else {
+    const top = Object.entries(tally).sort((a, b) => b[1] - a[1])[0];
+    if (top[0] === "🙅 弃权") {
+      narrative = "多数人选择弃权，没有形成明确的共识。故事继续推进。";
+    } else {
+      winner = top[0];
+      narrative = `投票结果让局势更加明朗——"${winner}"成为了众人目光的焦点。这个结果将影响接下来的剧情走向。`;
+    }
+  }
+
+  io.to(roomId).emit("vote:result", { tally, winner });
 
   appendMessages(roomId, [
     {
       type: "system",
       speaker: "DM",
-      content: `📊 投票结果：${resultText}`
+      content: `📊 投票结果：${resultText}${totalVotes === 0 ? "（无人投票）" : ""}`
     },
     {
       type: "ai",
       speaker: "AI主持人",
-      content: `投票结果让局势更加明朗——"${winner[0]}"成为了众人目光的焦点。这个结果将影响接下来的剧情走向。`
+      content: narrative
     }
   ]);
 
@@ -201,6 +217,10 @@ io.on("connection", (socket) => {
       ...payload,
       createdAt: new Date().toISOString()
     });
+  });
+
+  socket.on("fast-forward", (roomId: string) => {
+    setFastForward(roomId);
   });
 
   socket.on("disconnect", () => {
@@ -406,8 +426,8 @@ app.post("/api/rooms/:roomId/turn", async (req, res) => {
 
     const updatedRoom = await executeHumanTurn(req.params.roomId, body.playerId, body.content.trim());
 
-    // trigger vote every 3 rounds
-    if (updatedRoom.worldState.round > 0 && updatedRoom.worldState.round % 3 === 0 && !activeVotes.has(updatedRoom.id)) {
+    // trigger vote every 5 rounds
+    if (updatedRoom.worldState.round > 0 && updatedRoom.worldState.round % 5 === 0 && !activeVotes.has(updatedRoom.id)) {
       triggerVote(updatedRoom.id);
     }
 

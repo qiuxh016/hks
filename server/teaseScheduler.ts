@@ -3,9 +3,9 @@ import { generateTease } from "./dm";
 import { appendMessages, getRoom, listInProgressRooms, updateRoom } from "./store";
 import { countPlayerActions, msSince } from "./memory";
 
-const TICK_MS = 30_000;
-const TEASE_COOLDOWN_MS = 90_000;
-const IDLE_BEFORE_TEASE_MS = 50_000;
+const TICK_MS = 60_000;
+const TEASE_COOLDOWN_MS = 300_000;
+const IDLE_BEFORE_TEASE_MS = 180_000;
 
 const teasingRooms = new Set<string>();
 
@@ -71,7 +71,7 @@ function shouldTeaseRoom(room: ReturnType<typeof listInProgressRooms>[number]) {
   }
 
   const idleLongEnough = msSince(memory.lastActionAt) >= IDLE_BEFORE_TEASE_MS;
-  const everyFewRounds = room.worldState.round > 0 && room.worldState.round % 3 === 0;
+  const everyFewRounds = room.worldState.round > 0 && room.worldState.round % 6 === 0;
 
   return idleLongEnough || everyFewRounds;
 }

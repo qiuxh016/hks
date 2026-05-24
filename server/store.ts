@@ -448,3 +448,14 @@ export function listInProgressRooms() {
     .map((room) => ensureRoomShape(room))
     .filter((room) => room.status === "in_progress");
 }
+
+// broadcast hook — set by index.ts so store can trigger socket emits
+let broadcastFn: ((roomId: string) => void) | null = null;
+
+export function setBroadcastFn(fn: (roomId: string) => void) {
+  broadcastFn = fn;
+}
+
+export function broadcastRoom(roomId: string) {
+  if (broadcastFn) broadcastFn(roomId);
+}

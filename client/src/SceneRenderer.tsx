@@ -218,41 +218,6 @@ export default function SceneRenderer({
           ))}
       </div>
 
-      <div className="scene-footer">
-        <div className="object-detail">
-          {selectedObject ? (
-            <>
-              <p className="eyebrow">Selected</p>
-              <h4>{selectedObject.name}</h4>
-              <p>{selectedObject.description}</p>
-              <p className="object-status">状态：{selectedObject.status}</p>
-            </>
-          ) : (
-            <>
-              <p className="eyebrow">Selected</p>
-              <h4>点击一个场景人物</h4>
-              <p>点击后会优先切到这张人物或线索的特写图，再决定下一步操作。</p>
-            </>
-          )}
-        </div>
-
-        <div className="quick-actions">
-          <p className="eyebrow">Quick Actions</p>
-          <div className="quick-action-list">
-            {(selectedObject?.actions ?? ["观察四周", "试探队友", "整理线索"]).map((preset) => (
-              <button
-                key={preset}
-                type="button"
-                className="ghost-button"
-                onClick={() => onRunAction(preset)}
-                disabled={room.status !== "in_progress" || loading}
-              >
-                {preset}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
     </section>
   );
 }

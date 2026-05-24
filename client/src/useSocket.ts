@@ -20,7 +20,7 @@ interface UseSocketOptions {
   onRoomState: (room: Room) => void;
   onVoteStart: (vote: VoteState) => void;
   onVoteUpdate: (info: { voterName: string; voted: boolean }) => void;
-  onVoteResult: (result: { tally: Record<string, number>; winner: string }) => void;
+  onVoteResult: (result: { tally: Record<string, number>; winner: string | null }) => void;
   onChatMessage?: (msg: ChatMessage) => void;
   onError: (msg: string) => void;
 }
@@ -85,5 +85,9 @@ export function useSocket(opts: UseSocketOptions) {
     return id;
   }, []);
 
-  return { submitVote, sendChatMessage, socket };
+  const fastForward = useCallback((roomId: string) => {
+    socketRef.current?.emit("fast-forward", roomId);
+  }, []);
+
+  return { submitVote, sendChatMessage, fastForward, socket };
 }

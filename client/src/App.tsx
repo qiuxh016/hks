@@ -15,6 +15,7 @@ import {
   AI_HOST_SPEAKER,
   MAX_ROOM_PLAYERS,
   MIN_ROOM_PLAYERS,
+  Message,
   Room,
   RoomMode,
   Scenario,
@@ -22,11 +23,28 @@ import {
   getTurnPhaseLabel
 } from "../../shared/types";
 import { BgmPlayer } from "./components/BgmPlayer";
+import { TypewriterText } from "./components/TypewriterText";
 import { clearPlayerSession, loadPlayerSession, resolvePlayerId, savePlayerSession } from "./session";
 import { ChatMessage, useSocket, VoteState } from "./useSocket";
 import SceneRenderer from "./SceneRenderer";
 import VoiceChat from "./VoiceChat";
 import VoiceInput from "./VoiceInput";
+
+const BOT_AVATARS = ["🤖", "🦾", "🎲", "⚙️"];
+
+function getSpeakerAvatar(message: Message, room: Room | null): string {
+  if (message.variant === "tease") return "😈";
+  if (message.type === "ai") return "🎭";
+  if (message.type === "player" && message.playerId && room) {
+    const player = room.players.find(p => p.id === message.playerId);
+    if (player?.kind === "bot") {
+      const botIndex = room.players.filter(p => p.kind === "bot").indexOf(player);
+      return BOT_AVATARS[botIndex] ?? "🤖";
+    }
+    return "👤";
+  }
+  return "👤";
+}
 
 function App() {
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
@@ -46,6 +64,8 @@ function App() {
   const [starting, setStarting] = useState(false);
   const [myPlayerName, setMyPlayerName] = useState("");
   const messageListRef = useRef<HTMLDivElement>(null);
+  const prevRoundRef = useRef(0);
+  const prevLocationRef = useRef("");
 
   // invite + QR
   const [inviteCopied, setInviteCopied] = useState(false);
@@ -61,7 +81,7 @@ function App() {
   // voting state
   const [vote, setVote] = useState<VoteState | null>(null);
   const [voteChoice, setVoteChoice] = useState("");
-  const [voteResult, setVoteResult] = useState<{ tally: Record<string, number>; winner: string } | null>(null);
+  const [voteResult, setVoteResult] = useState<{ tally: Record<string, number>; winner: string | null } | null>(null);
   const [voters, setVoters] = useState<string[]>([]);
 
   // chat
@@ -69,6 +89,14 @@ function App() {
   const [chatInput, setChatInput] = useState("");
   const [activeTab, setActiveTab] = useState<"story" | "chat">("story");
   const [unreadCount, setUnreadCount] = useState(0);
+  const [expandedPlayers, setExpandedPlayers] = useState<Set<string>>(new Set());
+  const [questsExpanded, setQuestsExpanded] = useState(true);
+  const [sidebarLeftOpen, setSidebarLeftOpen] = useState(true);
+  const [sidebarRightOpen, setSidebarRightOpen] = useState(true);
+  const [fastForwarded, setFastForwarded] = useState(false);
+  const [typewriterDone, setTypewriterDone] = useState(true);
+  const [revealedCount, setRevealedCount] = useState(0);
+  const revealedCountRef = useRef(0);
   const chatListRef = useRef<HTMLDivElement>(null);
   const chatTabActiveRef = useRef(false);
 
@@ -94,6 +122,28 @@ function App() {
   useEffect(() => {
     setFocusedSceneObjectId("");
   }, [room?.scenarioId]);
+
+  // reset round/location tracker when room changes
+  useEffect(() => {
+    if (room) {
+      prevRoundRef.current = room.worldState.round;
+      prevLocationRef.current = room.worldState.currentLocation;
+    }
+  }, [room?.id]);
+
+  // reset fast-forward when bot phase ends
+  useEffect(() => {
+    if (room?.turnPhase !== "bot") {
+      setFastForwarded(false);
+    }
+  }, [room?.turnPhase]);
+
+  // track typewriter: hide turn prompt until latest narration finishes typing
+  useEffect(() => {
+    if (thinking || starting) {
+      setTypewriterDone(false);
+    }
+  }, [thinking, starting]);
 
   // session restore (skip if arriving via invite link)
   useEffect(() => {
@@ -199,7 +249,7 @@ function App() {
     }
 
     list.scrollTop = list.scrollHeight;
-  }, [room?.messages.length, thinking, starting]);
+  }, [room?.messages.length, revealedCount, thinking, starting]);
 
   // socket callbacks
   const onRoomState = useCallback((next: Room) => {
@@ -217,7 +267,7 @@ function App() {
     setVoters((prev) => [...prev, info.voterName]);
   }, []);
 
-  const onVoteResult = useCallback((r: { tally: Record<string, number>; winner: string }) => {
+  const onVoteResult = useCallback((r: { tally: Record<string, number>; winner: string | null }) => {
     setVoteResult(r);
     setVote(null);
   }, []);
@@ -233,7 +283,7 @@ function App() {
     setError(msg);
   }, []);
 
-  const { submitVote, sendChatMessage, socket } = useSocket({
+  const { submitVote, sendChatMessage, fastForward, socket } = useSocket({
     roomId: room?.id ?? null,
     onRoomState,
     onVoteStart,
@@ -261,6 +311,56 @@ function App() {
       currentTurnPlayer.id === activePlayerId
   );
   const humanCount = room?.players.filter((player) => player.kind === "human").length ?? 0;
+  const { storyMessages, systemMessages } = useMemo(() => {
+    if (!room?.messages) return { storyMessages: [] as Message[], systemMessages: [] as Message[] };
+    const story: Message[] = [];
+    const sys: Message[] = [];
+    for (const msg of room.messages) {
+      if (msg.type === "system") sys.push(msg);
+      else story.push(msg);
+    }
+    return { storyMessages: story, systemMessages: sys };
+  }, [room?.messages]);
+
+  // revealedCount: gate messages to appear one at a time with typewriter
+  const prevRoomIdRef = useRef<string | null>(null);
+  const prevStoryLenRef = useRef(0);
+
+  useEffect(() => {
+    const len = storyMessages.length;
+    const prevLen = prevStoryLenRef.current;
+    const roomChanged = room?.id !== prevRoomIdRef.current;
+    prevStoryLenRef.current = len;
+    if (room?.id) prevRoomIdRef.current = room.id;
+
+    if (len === 0) {
+      setRevealedCount(0);
+      revealedCountRef.current = 0;
+      return;
+    }
+
+    if (roomChanged || prevLen === 0 || fastForwarded) {
+      setRevealedCount(len);
+      revealedCountRef.current = len;
+      if (fastForwarded) setTypewriterDone(true);
+      return;
+    }
+
+    if (revealedCountRef.current >= prevLen) {
+      setTypewriterDone(false);
+    }
+  }, [storyMessages.length, room?.id, fastForwarded]);
+
+  useEffect(() => {
+    revealedCountRef.current = revealedCount;
+  }, [revealedCount]);
+
+  useEffect(() => {
+    if (revealedCount >= storyMessages.length && !thinking && !starting) {
+      setTypewriterDone(true);
+    }
+  }, [revealedCount, storyMessages.length, thinking, starting]);
+
   const amHost = room?.hostPlayerId === activePlayerId;
   const allHumansReady = room
     ? room.players.filter((p) => p.kind === "human").every((p) => p.ready)
@@ -469,6 +569,15 @@ function App() {
     setAction("");
   }
 
+  function togglePlayerExpand(playerId: string) {
+    setExpandedPlayers((prev) => {
+      const next = new Set(prev);
+      if (next.has(playerId)) next.delete(playerId);
+      else next.add(playerId);
+      return next;
+    });
+  }
+
   function handleChatSubmit(event: FormEvent) {
     event.preventDefault();
     if (!room || !chatInput.trim() || !me) return;
@@ -491,26 +600,31 @@ function App() {
   return (
     <main className="app-shell">
       <section className="hero-card">
-        <p className="eyebrow">Hackathon Frame</p>
         <h1>AI 地下城</h1>
-        <p className="hero-copy">
-          先把多人房间、聊天式冒险和 AI 主持人接起来，再慢慢把剧本、语音和实时联机做强。
-        </p>
         {aiMode === "no-api-key" && (
           <p className="error-text api-banner">
-            未检测到 DeepSeek API Key。请在项目根目录创建 `.env` 并设置 `DEEPSEEK_API_KEY`，然后重启 `npm run dev`。
+            未检测到 DeepSeek API Key，请在 `.env` 中设置 DEEPSEEK_API_KEY。
           </p>
         )}
-        {aiMode === "ai-ready" && (
-          <p className="api-ready">
-            每轮真人先依次输入指令，再由 DeepSeek 驱动的 AI 机器人依次行动。
-          </p>
-        )}
-        <BgmPlayer />
       </section>
 
-      <section className="grid">
-        <aside className="panel controls">
+      <section
+        className="grid"
+        style={{
+          gridTemplateColumns: `${sidebarLeftOpen ? "300px" : "36px"} minmax(0, 1fr) ${sidebarRightOpen ? "340px" : "36px"}`
+        }}
+      >
+        <aside className={`panel controls${sidebarLeftOpen ? "" : " is-collapsed"}`}>
+          <button
+            type="button"
+            className="sidebar-toggle"
+            onClick={() => setSidebarLeftOpen(!sidebarLeftOpen)}
+            title={sidebarLeftOpen ? "收起侧栏" : "展开侧栏"}
+          >
+            {sidebarLeftOpen ? "◀" : "▶"}
+          </button>
+          {sidebarLeftOpen && (
+          <>
           <h2>房间操作</h2>
 
           {!room && !fromInvite && (
@@ -582,9 +696,7 @@ function App() {
             </form>
           )}
 
-          {room && room.id === roomCode ? (
-            <p className="muted join-hint">你已在当前房间中，无需再次加入。可直接开始游戏。</p>
-          ) : (
+          {!room && (
             <form onSubmit={handleJoinRoom} className="stack join-form">
               {fromInvite && (
                 <p className="invite-hint" style={{ margin: 0, color: "var(--accent-2)", fontWeight: 700, fontSize: "0.9rem" }}>
@@ -610,38 +722,20 @@ function App() {
           {room && (
             <div className="status-card">
               <p>房间号：{room.id}</p>
-              <p>状态：{room.status === "lobby" ? "等待中" : room.status === "in_progress" ? "进行中" : "已结束"}</p>
               <p>
-                人数：{humanCount} 真人 / {room.maxPlayers} 人局
+                {humanCount} 真人 / {room.maxPlayers} 人局
                 {room.players.filter((player) => player.kind === "bot").length > 0 &&
-                  `（${room.players.filter((player) => player.kind === "bot").length} AI 机器人）`}
+                  `（${room.players.filter((player) => player.kind === "bot").length} AI）`}
               </p>
-              <p>场景：{scenarios.find((item) => item.id === room.scenarioId)?.title ?? room.scenarioId}</p>
+              <p>{scenarios.find((item) => item.id === room.scenarioId)?.title ?? room.scenarioId}</p>
               {room.status === "in_progress" && (
                 <>
                   <p className="turn-indicator">
-                    本轮阶段：{getTurnPhaseLabel(room.turnPhase)}
+                    {getTurnPhaseLabel(room.turnPhase)} · {currentTurnPlayer?.name ?? "—"}
                     {room.isProcessingTurn ? " · 处理中…" : ""}
-                  </p>
-                  <p className="turn-indicator">
-                    当前行动：{currentTurnPlayer?.name ?? "—"}
                   </p>
                 </>
               )}
-              <p>当前地点：{room.worldState.currentLocation}</p>
-              <p>紧张度：{room.worldState.tension} / 10</p>
-              <p>回合数：{room.worldState.round}</p>
-              {room.status === "in_progress" && room.worldState.quests.length > 0 && (
-                <div className="quest-list">
-                  <p className="quest-title">本局目标</p>
-                  <ul>
-                    {room.worldState.quests.map((quest) => (
-                      <li key={quest}>{quest}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
               {room.status === "lobby" && room.mode === "multi" && (
                 <>
                   <label style={{ marginTop: 14, display: "block" }}>
@@ -740,6 +834,31 @@ function App() {
             </div>
           )}
 
+          {room?.status === "in_progress" && room.worldState.quests.length > 0 && (
+            <div className={`quest-tracker${questsExpanded ? " is-expanded" : ""}`}>
+              <button
+                type="button"
+                className="quest-toggle"
+                onClick={() => setQuestsExpanded(!questsExpanded)}
+              >
+                <span className="quest-toggle-icon">📜</span>
+                <span>任务目标</span>
+                <span className="quest-count">{room.worldState.quests.length}</span>
+                <span className="quest-chevron">{questsExpanded ? "▲" : "▼"}</span>
+              </button>
+              {questsExpanded && (
+                <div className="quest-cards">
+                  {room.worldState.quests.map((quest, i) => (
+                    <div key={i} className="quest-card">
+                      <span className="quest-num">{i + 1}</span>
+                      <span className="quest-text">{quest}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Voice Chat */}
           {room && me && (
             <VoiceChat
@@ -791,10 +910,17 @@ function App() {
                   {opt === voteResult.winner ? "  ← 焦点" : ""}
                 </p>
               ))}
+              {!voteResult.winner && (
+                <p style={{ marginTop: 8, color: "var(--muted)", fontSize: "0.85rem" }}>
+                  未形成明确焦点，故事继续推进。
+                </p>
+              )}
             </div>
           )}
 
           {error && !room && <p className="error-text">{error}</p>}
+          </>
+          )}
         </aside>
 
         <section className="panel story-panel">
@@ -836,27 +962,87 @@ function App() {
                 />
               )}
 
-              <div className="message-list" ref={messageListRef}>
-                {room?.messages.map((message) => (
-                  <article
-                    key={message.id}
-                    className={`message message-${message.type} ${
-                      message.variant === "tease"
-                        ? "message-tease"
-                        : message.variant === "brief"
-                          ? "message-brief"
-                          : ""
-                    }`}
-                  >
-                    <p className="message-speaker">{message.speaker}</p>
-                    <p>{message.content}</p>
-                  </article>
-                ))}
+              <div className="story-scroll-area" ref={messageListRef}>
+                <div className={`message-list${(room?.worldState.tension ?? 0) <= 4 ? '' : (room?.worldState.tension ?? 0) <= 7 ? ' tension-mid' : ' tension-high'}`}>
+                {(() => {
+                  const items: React.ReactNode[] = [];
+                  storyMessages.forEach((message, idx) => {
+                    if (idx > revealedCount) return;
+                    const isRevealing = idx === revealedCount;
 
-                {(thinking || starting) && (
-                  <article className="message message-ai message-pending">
-                    <p className="message-speaker">{AI_HOST_SPEAKER}</p>
-                    <p>{starting ? "正在撰写开场剧情，请稍候…" : "正在根据你的行动推演剧情，请稍候…"}</p>
+                    // round separator
+                    if (room && room.worldState.round > 0 && room.worldState.round !== prevRoundRef.current) {
+                      items.push(
+                        <div key={`round-sep-${room.worldState.round}`} className="round-separator">
+                          <span className="round-separator-line" />
+                          <span className="round-separator-label">第 {room.worldState.round} 轮</span>
+                          <span className="round-separator-line" />
+                        </div>
+                      );
+                      prevRoundRef.current = room.worldState.round;
+                    }
+                    // location transition
+                    if (room && room.worldState.currentLocation && room.worldState.currentLocation !== prevLocationRef.current && prevLocationRef.current !== "") {
+                      items.push(
+                        <div key={`loc-sep-${idx}`} className="location-separator">
+                          <span className="location-separator-icon">📍</span>
+                          <span>{room.worldState.currentLocation}</span>
+                        </div>
+                      );
+                    }
+                    if (room) {
+                      prevLocationRef.current = room.worldState.currentLocation;
+                    }
+
+                    const isBot = message.type === "player" && message.playerId
+                      && room?.players.find(p => p.id === message.playerId)?.kind === "bot";
+                    const variantClass = [
+                      message.variant === "tease" ? "chat-msg-tease" : "",
+                      message.variant === "brief" ? "chat-msg-brief" : "",
+                      isBot ? "chat-msg-bot" : ""
+                    ].filter(Boolean).join(" ");
+
+                    items.push(
+                      <article
+                        key={message.id}
+                        className={`chat-msg chat-msg-${message.type} ${variantClass}${isRevealing ? " chat-msg-revealing" : ""}`}
+                      >
+                        <p className="chat-msg-speaker">
+                          <span className="speaker-avatar">{getSpeakerAvatar(message, room)}</span>
+                          {message.speaker}
+                          {message.variant === "tease" ? " · 调侃" : ""}
+                        </p>
+                        <div className="chat-msg-bubble">
+                          {isRevealing ? (
+                            <TypewriterText
+                              text={message.content}
+                              onComplete={() => {
+                                const next = revealedCountRef.current + 1;
+                                setRevealedCount(next);
+                                revealedCountRef.current = next;
+                              }}
+                            />
+                          ) : (
+                            <p className="chat-msg-text">{message.content}</p>
+                          )}
+                        </div>
+                      </article>
+                    );
+                  });
+                  return items;
+                })()}
+
+                {(thinking || starting) && revealedCount >= storyMessages.length && (
+                  <article className="chat-msg chat-msg-ai chat-msg-pending">
+                    <p className="chat-msg-speaker">{AI_HOST_SPEAKER}</p>
+                    <div className="chat-msg-bubble">
+                      <p className="chat-msg-text">
+                        {starting ? "正在撰写开场剧情，请稍候…" : "正在根据你的行动推演剧情，请稍候…"}
+                        <span className="thinking-dots">
+                          <span>.</span><span>.</span><span>.</span>
+                        </span>
+                      </p>
+                    </div>
                   </article>
                 )}
 
@@ -870,11 +1056,40 @@ function App() {
 
               {error && activeTab === "story" && <p className="error-text story-error">{error}</p>}
 
-              <form onSubmit={handleSubmitTurn} className="action-bar">
+              {room && room.turnPhase === "bot" && room.status === "in_progress" && (
+                <div className="fast-forward-bar">
+                  <span className="fast-forward-hint">
+                    {fastForwarded
+                      ? "已快进，正在生成剩余 AI 行动…"
+                      : `AI 机器人依次行动中，${room.players.filter(p => p.kind === "bot").length} 位机器人正在发挥…`}
+                  </span>
+                  {!fastForwarded && (
+                    <button
+                      type="button"
+                      className="fast-forward-btn"
+                      onClick={() => {
+                        setFastForwarded(true);
+                        fastForward(room.id);
+                        setRevealedCount(storyMessages.length);
+                        revealedCountRef.current = storyMessages.length;
+                        setTypewriterDone(true);
+                      }}
+                    >
+                      快进全部
+                    </button>
+                  )}
+                </div>
+              )}
+              </div>
+
+              <form onSubmit={handleSubmitTurn} className={`action-bar${isMyTurn && !thinking && typewriterDone ? " action-bar-my-turn" : ""}`}>
+                {isMyTurn && !thinking && typewriterDone && (
+                  <p className="turn-prompt">轮到你了，输入你的行动</p>
+                )}
                 <input
                   placeholder={
                     isMyTurn
-                      ? "输入你的行动，例如：我偷走地图 / 我观察谁最紧张"
+                      ? "例如：我偷走地图 / 我观察谁最紧张 / 我悄悄跟上那个黑影…"
                       : room?.isProcessingTurn
                         ? "AI 机器人或主持人处理中…"
                         : `等待 ${currentTurnPlayer?.name ?? "其他玩家"} 行动`
@@ -882,6 +1097,7 @@ function App() {
                   value={action}
                   onChange={(event) => setAction(event.target.value)}
                   disabled={room?.status !== "in_progress" || !isMyTurn || room.isProcessingTurn}
+                  className={isMyTurn && !thinking && typewriterDone ? "input-my-turn" : ""}
                 />
                 <VoiceInput
                   onResult={(text) => {
@@ -961,8 +1177,99 @@ function App() {
           )}
         </section>
 
-        <aside className="panel roster-panel">
+        <aside className={`panel roster-panel${sidebarRightOpen ? "" : " is-collapsed"}`}>
+          <button
+            type="button"
+            className="sidebar-toggle"
+            onClick={() => setSidebarRightOpen(!sidebarRightOpen)}
+            title={sidebarRightOpen ? "收起侧栏" : "展开侧栏"}
+          >
+            {sidebarRightOpen ? "▶" : "◀"}
+          </button>
+          {sidebarRightOpen && (
+          <>
           <h2>玩家与身份</h2>
+
+          {room && room.status === "in_progress" && room.worldState.memory?.storySummary && (() => {
+            const summary = room.worldState.memory.storySummary;
+            const lines = summary.split("\n").filter(Boolean);
+            const parts: { label: string; icon: string; text: string }[] = [];
+            for (const line of lines) {
+              const match = line.match(/^(.+?)[：:]\s*(.+)$/);
+              if (match) {
+                const rawLabel = match[1].trim();
+                if (rawLabel.includes("目标")) continue;
+                const icon =
+                  rawLabel.includes("走向") ? "🧭" :
+                  rawLabel.includes("真相") ? "💎" : "📌";
+                parts.push({ label: rawLabel, icon, text: match[2].trim() });
+              } else {
+                parts.push({ label: "", icon: "📌", text: line.trim() });
+              }
+            }
+            return (
+              <div className="story-direction-card">
+                <p className="story-direction-header">📜 故事走向</p>
+                <div className="story-direction-list">
+                  {parts.map((p, i) => (
+                    <div key={i} className="story-direction-item">
+                      <span className="story-direction-icon">{p.icon}</span>
+                      <div className="story-direction-body">
+                        {p.label && <span className="story-direction-label">{p.label}</span>}
+                        <span className="story-direction-text">{p.text}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+
+          {room && room.status === "in_progress" && (
+            <div className="atmo-card">
+              <p className="atmo-title">{room.worldState.sceneTitle || room.worldState.currentLocation}</p>
+              <p className="atmo-location">{room.worldState.currentLocation}</p>
+
+              <div className="atmo-tags">
+                {room.scenarioId === "midnight-train" && (<span className="atmo-tag">列车</span>)}
+                {room.scenarioId === "office-dungeon" && (<span className="atmo-tag">地下城</span>)}
+                {room.scenarioId === "noble-banquet" && (<span className="atmo-tag">宫廷</span>)}
+                {room.worldState.tension <= 3 && (<span className="atmo-tag is-mood">平静</span>)}
+                {room.worldState.tension > 3 && room.worldState.tension <= 6 && (<span className="atmo-tag is-mood">紧张</span>)}
+                {room.worldState.tension > 6 && (<span className="atmo-tag is-danger">危急</span>)}
+                {room.worldState.round > 0 && (<span className="atmo-tag">第{room.worldState.round}轮</span>)}
+              </div>
+
+              <div className="atmo-section">
+                <p className="atmo-label">紧张度</p>
+                <div className="atmo-tension">
+                  <div className="atmo-tension-bar">
+                    <div
+                      className="atmo-tension-fill"
+                      style={{ width: `${(room.worldState.tension / 10) * 100}%` }}
+                    />
+                  </div>
+                  <span className="atmo-tension-num">{room.worldState.tension}/10</span>
+                </div>
+              </div>
+
+            </div>
+          )}
+
+          <div className="sidebar-bgm">
+            <BgmPlayer />
+          </div>
+
+          {systemMessages.length > 0 && (
+            <div className="syslog-card">
+              <p className="eyebrow">系统日志</p>
+              <div className="syslog-list">
+                {systemMessages.slice(-6).reverse().map((msg) => (
+                  <p key={msg.id} className="syslog-item">{msg.content}</p>
+                ))}
+              </div>
+            </div>
+          )}
 
           {room?.worldState.clues && room.worldState.clues.length > 0 && (
             <div className="clue-card">
@@ -973,34 +1280,38 @@ function App() {
             </div>
           )}
 
-          {room?.players.map((player) => (
-            <article
-              key={player.id}
-              className={`player-card ${player.id === activePlayerId ? "is-me" : ""} ${
-                player.kind === "bot" ? "is-bot" : ""
-              } ${currentTurnPlayer?.id === player.id ? "is-active-turn" : ""}`}
-            >
-              <p className="player-name">
-                {player.name}
-                {player.isHost ? " · 房主" : ""}
-                {player.kind === "bot" ? " · AI" : ""}
-                {currentTurnPlayer?.id === player.id ? " · 行动中" : ""}
-              </p>
-              <p>{player.roleCard?.role ?? "等待分配身份"}</p>
-              <p>{player.roleCard?.personality ?? "待开始"}</p>
-              <p>{player.roleCard?.backstory ?? "开始游戏后可见背景。"}</p>
-              <p>{player.roleCard?.secretGoal ?? "开始游戏后可见隐藏目标。"}</p>
-            </article>
-          ))}
+          {room?.players.map((player) => {
+            const isExpanded = expandedPlayers.has(player.id);
+            return (
+              <article
+                key={player.id}
+                className={`player-card ${player.id === activePlayerId ? "is-me" : ""} ${
+                  player.kind === "bot" ? "is-bot" : ""
+                } ${currentTurnPlayer?.id === player.id ? "is-active-turn" : ""} ${
+                  isExpanded ? "is-expanded" : ""
+                }`}
+              >
+                <p className="player-name" onClick={() => togglePlayerExpand(player.id)}>
+                  <span className="player-expand-icon">{isExpanded ? "▼" : "▶"}</span>
+                  {player.name}
+                  {player.isHost ? " · 房主" : ""}
+                  {player.kind === "bot" ? " · AI" : ""}
+                  {currentTurnPlayer?.id === player.id ? " · 行动中" : ""}
+                </p>
+                <p className="player-role">{player.roleCard?.role ?? "等待分配身份"}</p>
+                {isExpanded && (
+                  <div className="player-detail">
+                    <p>{player.roleCard?.personality ?? "待开始"}</p>
+                    <p>{player.roleCard?.backstory ?? "开始游戏后可见背景。"}</p>
+                    <p>{player.roleCard?.secretGoal ?? "开始游戏后可见隐藏目标。"}</p>
+                  </div>
+                )}
+              </article>
+            );
+          })}
 
           {!room && <p className="muted">玩家加入后会显示在这里。</p>}
-
-          {me && (
-            <div className="me-card">
-              <p className="eyebrow">Your POV</p>
-              <h3>{me.name}</h3>
-              <p>{me.roleCard?.role ?? "还未获得角色卡"}</p>
-            </div>
+          </>
           )}
         </aside>
       </section>

@@ -11,12 +11,30 @@ import { recordPlayerAction } from "./memory";
 import {
   advanceTurn,
   appendMessages,
+  broadcastRoom,
   getRoom,
   setProcessingTurn,
   updateRoom
 } from "./store";
 
 const roomLocks = new Set<string>();
+
+const BOT_DELAY_MS = 4000;
+const fastForwardRooms = new Set<string>();
+
+export function setFastForward(roomId: string) {
+  fastForwardRooms.add(roomId);
+}
+
+async function delayWithFastForward(roomId: string, totalMs: number) {
+  const pollMs = 200;
+  let elapsed = 0;
+  while (elapsed < totalMs) {
+    if (fastForwardRooms.has(roomId)) return;
+    await new Promise((r) => setTimeout(r, pollMs));
+    elapsed += pollMs;
+  }
+}
 
 function announceTurn(room: Room, player: Player) {
   appendMessages(room.id, [
@@ -56,6 +74,17 @@ async function runSingleTurn(roomId: string, player: Player, content: string) {
     throw new Error("游戏未在进行中");
   }
 
+  // show player action immediately, before waiting for AI
+  appendMessages(roomId, [
+    {
+      type: "player",
+      speaker: player.name,
+      content,
+      playerId: player.id
+    }
+  ]);
+  broadcastRoom(roomId);
+
   const dmResult = await resolveTurn(room, player, content);
 
   updateRoom(roomId, (draft) => {
@@ -74,13 +103,8 @@ async function runSingleTurn(roomId: string, player: Player, content: string) {
     }
   }
 
+  // DM narration follows after AI responds
   appendMessages(roomId, [
-    {
-      type: "player",
-      speaker: player.name,
-      content,
-      playerId: player.id
-    },
     {
       type: "ai",
       speaker: AI_HOST_SPEAKER,
@@ -110,11 +134,20 @@ async function runBotPhaseLoop(roomId: string) {
     }
 
     announceTurn(room, current);
+    broadcastRoom(roomId);
 
     const action = await generateBotAction(room, current);
     await runSingleTurn(roomId, current, action);
+    broadcastRoom(roomId);
     room = getRoom(roomId);
+
+    // delay between bots for immersive reading, skippable via fast-forward
+    if (room && room.turnPhase === "bot" && !fastForwardRooms.has(roomId)) {
+      await delayWithFastForward(roomId, BOT_DELAY_MS);
+    }
   }
+
+  fastForwardRooms.delete(roomId);
 
   const nextHuman = room ? getCurrentTurnPlayer(room) : undefined;
   if (room && nextHuman && room.turnPhase === "human") {
