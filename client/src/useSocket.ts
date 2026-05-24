@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { io, Socket } from "socket.io-client";
-import { Room } from "../../shared/types";
+import {
+  AccusationResultPayload,
+  AccusationVoteState,
+  ChatPost,
+  ChatPostPayload,
+  Room
+} from "../../shared/types";
 
 export interface VoteState {
   question: string;
@@ -8,20 +14,20 @@ export interface VoteState {
   deadline: number;
 }
 
-export interface ChatMessage {
-  id: string;
-  playerName: string;
-  content: string;
-  createdAt: string;
-}
+export type { AccusationVoteState, AccusationResultPayload };
+
+export type ChatMessage = ChatPost;
 
 interface UseSocketOptions {
   roomId: string | null;
   onRoomState: (room: Room) => void;
   onVoteStart: (vote: VoteState) => void;
   onVoteUpdate: (info: { voterName: string; voted: boolean }) => void;
-  onVoteResult: (result: { tally: Record<string, number>; winner: string | null }) => void;
-  onChatMessage?: (msg: ChatMessage) => void;
+  onVoteResult: (result: { tally: Record<string, number>; winner: string }) => void;
+  onAccusationStart?: (vote: AccusationVoteState) => void;
+  onAccusationUpdate?: (info: { voterName: string; voted: boolean }) => void;
+  onAccusationResult?: (result: AccusationResultPayload) => void;
+  onChatPost?: (post: ChatPost) => void;
   onError: (msg: string) => void;
 }
 
@@ -30,6 +36,17 @@ export function createSocket() {
     autoConnect: false,
     transports: ["websocket", "polling"]
   });
+}
+
+function normalizeChatPost(payload: ChatPostPayload & { createdAt?: string }): ChatPost {
+  return {
+    id: payload.id,
+    playerName: payload.playerName,
+    type: payload.type ?? "text",
+    content: payload.content ?? "",
+    mediaDataUrl: payload.mediaDataUrl,
+    createdAt: payload.createdAt ?? new Date().toISOString()
+  };
 }
 
 export function useSocket(opts: UseSocketOptions) {
@@ -45,10 +62,32 @@ export function useSocket(opts: UseSocketOptions) {
     s.on("vote:start", opts.onVoteStart);
     s.on("vote:update", opts.onVoteUpdate);
     s.on("vote:result", opts.onVoteResult);
+    s.on("accusation:start", (payload: AccusationVoteState) => {
+      opts.onAccusationStart?.(payload);
+    });
+    s.on("accusation:update", (info: { voterName: string; voted: boolean }) => {
+      opts.onAccusationUpdate?.(info);
+    });
+    s.on("accusation:result", (result: AccusationResultPayload) => {
+      opts.onAccusationResult?.(result);
+    });
     s.on("error", opts.onError);
 
-    if (opts.onChatMessage) {
-      s.on("chat:message", opts.onChatMessage);
+    if (opts.onChatPost) {
+      s.on("chat:post", (payload: ChatPostPayload & { createdAt?: string }) => {
+        opts.onChatPost?.(normalizeChatPost(payload));
+      });
+      s.on("chat:message", (payload: { playerName: string; content: string; id: string; createdAt?: string }) => {
+        opts.onChatPost?.(
+          normalizeChatPost({
+            id: payload.id,
+            playerName: payload.playerName,
+            type: "text",
+            content: payload.content,
+            createdAt: payload.createdAt
+          })
+        );
+      });
     }
 
     s.connect();
@@ -79,15 +118,32 @@ export function useSocket(opts: UseSocketOptions) {
     socketRef.current?.emit("vote:submit", { roomId, playerId, choice });
   }, []);
 
-  const sendChatMessage = useCallback((roomId: string, playerName: string, content: string) => {
-    const id = `chat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    socketRef.current?.emit("chat:message", roomId, { playerName, content, id });
+  const submitAccusation = useCallback(
+    (roomId: string, playerId: string, accusedPlayerId: string) => {
+      socketRef.current?.emit("accusation:submit", { roomId, playerId, accusedPlayerId });
+    },
+    []
+  );
+
+  const sendChatPost = useCallback((roomId: string, playerName: string, post: Omit<ChatPostPayload, "id" | "playerName">) => {
+    const id = `post_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    socketRef.current?.emit("chat:post", roomId, {
+      id,
+      playerName,
+      type: post.type,
+      content: post.content,
+      mediaDataUrl: post.mediaDataUrl
+    });
     return id;
   }, []);
+
+  const sendChatMessage = useCallback((roomId: string, playerName: string, content: string) => {
+    return sendChatPost(roomId, playerName, { type: "text", content });
+  }, [sendChatPost]);
 
   const fastForward = useCallback((roomId: string) => {
     socketRef.current?.emit("fast-forward", roomId);
   }, []);
 
-  return { submitVote, sendChatMessage, fastForward, socket };
+  return { submitVote, submitAccusation, sendChatMessage, sendChatPost, fastForward, socket };
 }

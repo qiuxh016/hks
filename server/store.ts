@@ -6,12 +6,19 @@ import {
   MIN_ROOM_PLAYERS,
   Player,
   PlayerKind,
+  GameEndReport,
   RoleCard,
   Room,
   ScenarioId,
   WorldState,
   formatBotName
 } from "../shared/types";
+import {
+  finalizeGameRoles,
+  selectPlayerRole as applyRoleSelection,
+  syncLobbyBots,
+  syncRoleSlots
+} from "./roles";
 
 const rooms = new Map<string, Room>();
 
@@ -29,7 +36,10 @@ function createMemory(): WorldState["memory"] {
     playerActions: {},
     memorableMoments: [],
     lastTeaseAt: null,
-    lastActionAt: null
+    lastActionAt: null,
+    lastChatAt: null,
+    botMinds: {},
+    playerAgents: {}
   };
 }
 
@@ -39,7 +49,9 @@ function createWorldState(): WorldState {
     round: 0,
     tension: 1,
     quests: [],
+    objectives: [],
     clues: [],
+    investigationClues: [],
     sceneTitle: "等待开场",
     sceneDescription: "房主开始游戏后，这里会出现第一个可交互场景。",
     interactiveObjects: [],
@@ -102,6 +114,9 @@ export function findHumanByName(room: Room, playerName: string) {
 
 function ensureRoomShape(room: Room) {
   ensureRoomMemory(room);
+  if (!room.gameInstanceId) {
+    room.gameInstanceId = "";
+  }
   room.players = room.players.map(ensurePlayer);
 
   if (room.status === "lobby") {
@@ -129,6 +144,11 @@ function ensureRoomShape(room: Room) {
   if (!room.mode) {
     room.mode = "multi";
   }
+  if (!room.roleSlots?.length) {
+    syncRoleSlots(room);
+  } else if (room.roleSlots.length !== room.maxPlayers) {
+    syncRoleSlots(room);
+  }
   return room;
 }
 
@@ -137,7 +157,69 @@ function ensureRoomMemory(room: Room) {
     room.worldState.memory = createMemory();
   }
 
+  if (!room.worldState.memory.botMinds) {
+    room.worldState.memory.botMinds = {};
+  }
+
+  if (!room.worldState.memory.playerAgents) {
+    room.worldState.memory.playerAgents = {};
+  }
+
+  if (room.worldState.memory.lastChatAt === undefined) {
+    room.worldState.memory.lastChatAt = null;
+  }
+
+  if (!room.worldState.objectives) {
+    room.worldState.objectives = (room.worldState.quests ?? []).map((text, index) => ({
+      id: `session-${index + 1}`,
+      scope: "session" as const,
+      text,
+      status: "pending" as const
+    }));
+  }
+
+  if (!room.worldState.investigationClues) {
+    room.worldState.investigationClues = (room.worldState.clues ?? []).map((text, index) => ({
+      id: `clue-${index + 1}`,
+      text,
+      round: 0,
+      source: "场景",
+      relatesTo: "core-truth"
+    }));
+  }
+
+  room.worldState.clues = room.worldState.investigationClues.map((item) => item.text);
+
   return room;
+}
+
+export function endGame(roomId: string, report: GameEndReport) {
+  const room = rooms.get(roomId);
+  if (!room) {
+    throw new Error("房间不存在");
+  }
+
+  room.status = "ended";
+  room.worldState.gameEnd = report;
+  room.isProcessingTurn = false;
+
+  if (room.gameInstanceId) {
+    room.worldState.behaviorReviews = {
+      gameInstanceId: room.gameInstanceId,
+      status: "pending",
+      reviews: []
+    };
+    room.worldState.fullMysteryReveal = {
+      gameInstanceId: room.gameInstanceId,
+      status: "pending",
+      content: ""
+    };
+  }
+
+  const shaped = ensureRoomShape(room);
+  void import("./behaviorReview").then((module) => module.generateBehaviorReviewsForRoom(roomId));
+  void import("./mysteryReveal").then((module) => module.generateFullMysteryRevealForRoom(roomId));
+  return shaped;
 }
 
 export function getRoom(roomId: string) {
@@ -163,11 +245,13 @@ export function createRoom(hostName: string, scenarioId: ScenarioId, maxPlayers 
 
   const room: Room = {
     id: roomId,
+    gameInstanceId: "",
     scenarioId,
     status: "lobby",
     mode,
     hostPlayerId,
     maxPlayers: capped,
+    roleSlots: [],
     turnPhase: "human",
     humanTurnOrder: [],
     botTurnOrder: [],
@@ -186,7 +270,14 @@ export function createRoom(hostName: string, scenarioId: ScenarioId, maxPlayers 
   };
 
   rooms.set(roomId, room);
-  return { room, playerId: hostPlayerId };
+  syncRoleSlots(room);
+
+  if (mode === "single" && room.roleSlots[0]) {
+    room.roleSlots[0].claimedByPlayerId = hostPlayerId;
+    host.roleSlotId = room.roleSlots[0].id;
+  }
+
+  return { room: ensureRoomShape(room), playerId: hostPlayerId };
 }
 
 export function updateRoomMaxPlayers(roomId: string, hostPlayerId: string, maxPlayers: number) {
@@ -210,16 +301,79 @@ export function updateRoomMaxPlayers(roomId: string, hostPlayerId: string, maxPl
   }
 
   room.maxPlayers = capped;
+  syncRoleSlots(room);
+  syncLobbyBots(room);
   room.messages.push(
     createMessage({
       type: "system",
       speaker: "系统",
-      content: `房主将房间人数设置为 ${capped} 人。`
+      content: `房主将房间人数设置为 ${capped} 人，已刷新 ${capped} 个可选角色。`
     })
   );
 
   return ensureRoomShape(room);
 }
+
+export function choosePlayerRole(roomId: string, playerId: string, roleSlotId: string | null) {
+  const room = rooms.get(roomId);
+
+  if (!room) {
+    throw new Error("房间不存在");
+  }
+
+  if (room.status !== "lobby") {
+    throw new Error("游戏已开始，不能更换角色");
+  }
+
+  ensureRoomShape(room);
+  const player = room.players.find((item) => item.id === playerId);
+  if (!player) {
+    throw new Error("玩家不存在");
+  }
+
+  const previousSlotId = player.roleSlotId;
+  applyRoleSelection(room, playerId, roleSlotId);
+
+  if (roleSlotId) {
+    const slot = room.roleSlots.find((item) => item.id === roleSlotId);
+    room.messages.push(
+      createMessage({
+        type: "system",
+        speaker: "系统",
+        content: `${player.name} 选择了角色「${slot?.role ?? "未知"}」。`
+      })
+    );
+  } else if (previousSlotId) {
+    room.messages.push(
+      createMessage({
+        type: "system",
+        speaker: "系统",
+        content: `${player.name} 取消了角色选择。`
+      })
+    );
+  }
+
+  if (roleSlotId) {
+    player.ready = true;
+  } else {
+    player.ready = false;
+  }
+
+  const botsAdded = syncLobbyBots(room);
+  if (botsAdded > 0) {
+    room.messages.push(
+      createMessage({
+        type: "system",
+        speaker: "系统",
+        content: `所有真人已选角，剩余 ${botsAdded} 个角色已由 AI 机器人扮演。`
+      })
+    );
+  }
+
+  return ensureRoomShape(room);
+}
+
+export { finalizeGameRoles };
 
 export function joinRoom(roomId: string, playerName: string) {
   const room = rooms.get(roomId);
@@ -289,6 +443,10 @@ export function togglePlayerReady(roomId: string, playerId: string) {
 
   if (player.isHost) {
     throw new Error("房主默认已准备");
+  }
+
+  if (!player.roleSlotId && !player.ready) {
+    throw new Error("请先选择角色，再点击准备");
   }
 
   player.ready = !player.ready;
@@ -447,15 +605,4 @@ export function listInProgressRooms() {
   return [...rooms.values()]
     .map((room) => ensureRoomShape(room))
     .filter((room) => room.status === "in_progress");
-}
-
-// broadcast hook — set by index.ts so store can trigger socket emits
-let broadcastFn: ((roomId: string) => void) | null = null;
-
-export function setBroadcastFn(fn: (roomId: string) => void) {
-  broadcastFn = fn;
-}
-
-export function broadcastRoom(roomId: string) {
-  if (broadcastFn) broadcastFn(roomId);
 }

@@ -5,13 +5,24 @@ import {
   getCurrentTurnPlayer,
   getTurnPhaseLabel
 } from "../shared/types";
+import { refreshBotMind } from "./botMind";
 import { generateBotAction } from "./botPlayer";
-import { refreshStorySummary, resolveTurn } from "./dm";
+import {
+  applyObjectiveUpdates,
+  buildGameEndReport,
+  formatGameEndBrief,
+  formatNewClueMessage,
+  formatObjectiveProgressMessage,
+  mergeInvestigationClues,
+  refreshStorySummary,
+  resolveTurn
+} from "./dm";
+import { formatCaseProgressForPlayers, reconcileTurnOutcome, syncClueChainStep } from "./caseProgress";
 import { recordPlayerAction } from "./memory";
 import {
   advanceTurn,
   appendMessages,
-  broadcastRoom,
+  endGame,
   getRoom,
   setProcessingTurn,
   updateRoom
@@ -27,12 +38,17 @@ export function setFastForward(roomId: string) {
 }
 
 async function delayWithFastForward(roomId: string, totalMs: number) {
-  const pollMs = 200;
-  let elapsed = 0;
-  while (elapsed < totalMs) {
-    if (fastForwardRooms.has(roomId)) return;
-    await new Promise((r) => setTimeout(r, pollMs));
-    elapsed += pollMs;
+  if (fastForwardRooms.has(roomId)) {
+    fastForwardRooms.delete(roomId);
+    return;
+  }
+  const step = 500;
+  for (let elapsed = 0; elapsed < totalMs; elapsed += step) {
+    if (fastForwardRooms.has(roomId)) {
+      fastForwardRooms.delete(roomId);
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, step));
   }
 }
 
@@ -67,29 +83,44 @@ function announcePhaseChange(room: Room) {
   ]);
 }
 
-async function runSingleTurn(roomId: string, player: Player, content: string) {
+async function runSingleTurn(roomId: string, player: Player, content: string): Promise<boolean> {
   const room = getRoom(roomId);
 
   if (!room || room.status !== "in_progress") {
     throw new Error("游戏未在进行中");
   }
 
-  // show player action immediately, before waiting for AI
-  appendMessages(roomId, [
-    {
-      type: "player",
-      speaker: player.name,
-      content,
-      playerId: player.id
-    }
-  ]);
-  broadcastRoom(roomId);
-
+  const beforeObjectives = room.worldState.objectives.map((item) => ({ ...item }));
   const dmResult = await resolveTurn(room, player, content);
+  const provisionalObjectives = applyObjectiveUpdates(
+    room.worldState.objectives,
+    dmResult.objectiveUpdates
+  );
+  const reconciled = reconcileTurnOutcome(
+    { ...room, worldState: { ...room.worldState, objectives: provisionalObjectives } },
+    dmResult,
+    provisionalObjectives,
+    content
+  );
+  const afterObjectives = applyObjectiveUpdates(
+    room.worldState.objectives,
+    reconciled.objectiveUpdates
+  );
+  const mergedClues = mergeInvestigationClues(
+    room.worldState.investigationClues,
+    reconciled.newClues
+  );
 
   updateRoom(roomId, (draft) => {
     draft.worldState.tension = Math.min(10, draft.worldState.tension + 1);
-    draft.worldState.currentLocation = dmResult.nextLocation;
+    draft.worldState.currentLocation = reconciled.nextLocation;
+    draft.worldState.objectives = afterObjectives;
+    draft.worldState.investigationClues = mergedClues;
+    draft.worldState.clues = mergedClues.map((item) => item.text);
+    draft.worldState.quests = afterObjectives
+      .filter((item) => item.scope === "session")
+      .map((item) => item.text);
+    syncClueChainStep(draft);
   });
 
   const roomAfterAction = getRoom(roomId);
@@ -103,14 +134,76 @@ async function runSingleTurn(roomId: string, player: Player, content: string) {
     }
   }
 
-  // DM narration follows after AI responds
-  appendMessages(roomId, [
+  const storyMessages: Array<Parameters<typeof appendMessages>[1][number]> = [
+    {
+      type: "player",
+      speaker: player.name,
+      content,
+      playerId: player.id
+    },
     {
       type: "ai",
       speaker: AI_HOST_SPEAKER,
-      content: dmResult.narration
+      content: reconciled.narration
     }
-  ]);
+  ];
+
+  const progressMessage = formatObjectiveProgressMessage(beforeObjectives, afterObjectives);
+  if (progressMessage) {
+    storyMessages.push({
+      type: "system",
+      speaker: "任务进度",
+      content: progressMessage
+    });
+  }
+
+  const clueMessage = formatNewClueMessage(reconciled.newClues);
+  if (clueMessage) {
+    storyMessages.push({
+      type: "system",
+      speaker: "推理线索",
+      content: clueMessage
+    });
+  }
+
+  const roomForProgress = getRoom(roomId);
+  if (roomForProgress && reconciled.gameStatus === "in_progress") {
+    const caseProgress = formatCaseProgressForPlayers(roomForProgress);
+    if (caseProgress) {
+      storyMessages.push({
+        type: "system",
+        speaker: "结案进度",
+        content: caseProgress,
+        variant: "brief"
+      });
+    }
+  }
+
+  appendMessages(roomId, storyMessages);
+
+  if (reconciled.gameStatus !== "in_progress") {
+    const latest = getRoom(roomId)!;
+    const endDraft = reconciled.endDraft ?? {
+      outcome: reconciled.gameStatus === "success_end" ? "success" : "failure",
+      truthRevealed: latest.worldState.missionBrief?.coreTruth ?? "（未记录）",
+      sessionVerdict: "",
+      scenarioVerdict: "",
+      epilogue: reconciled.narration
+    };
+    const report = buildGameEndReport(latest, endDraft);
+
+    appendMessages(roomId, [
+      {
+        type: "system",
+        speaker: AI_HOST_SPEAKER,
+        content: formatGameEndBrief(report),
+        variant: "ending"
+      }
+    ]);
+
+    endGame(roomId, report);
+    return true;
+  }
 
   const beforePhase = getRoom(roomId)!.turnPhase;
   advanceTurn(getRoom(roomId)!);
@@ -121,6 +214,8 @@ async function runSingleTurn(roomId: string, player: Player, content: string) {
   } else if (beforePhase === "bot" && afterRoom.turnPhase === "human") {
     announcePhaseChange(afterRoom);
   }
+
+  return false;
 }
 
 async function runBotPhaseLoop(roomId: string) {
@@ -134,20 +229,19 @@ async function runBotPhaseLoop(roomId: string) {
     }
 
     announceTurn(room, current);
-    broadcastRoom(roomId);
 
-    const action = await generateBotAction(room, current);
-    await runSingleTurn(roomId, current, action);
-    broadcastRoom(roomId);
+    await refreshBotMind(roomId, current);
+    const roomForAction = getRoom(roomId) ?? room;
+    const action = await generateBotAction(roomForAction, current);
+    const ended = await runSingleTurn(roomId, current, action);
+    if (ended) {
+      break;
+    }
     room = getRoom(roomId);
-
-    // delay between bots for immersive reading, skippable via fast-forward
-    if (room && room.turnPhase === "bot" && !fastForwardRooms.has(roomId)) {
+    if (room?.status === "in_progress" && room.turnPhase === "bot") {
       await delayWithFastForward(roomId, BOT_DELAY_MS);
     }
   }
-
-  fastForwardRooms.delete(roomId);
 
   const nextHuman = room ? getCurrentTurnPlayer(room) : undefined;
   if (room && nextHuman && room.turnPhase === "human") {
@@ -192,9 +286,16 @@ export async function executeHumanTurn(roomId: string, playerId: string, content
   setProcessingTurn(roomId, true);
 
   try {
-    await runSingleTurn(roomId, player, content.trim());
+    const ended = await runSingleTurn(roomId, player, content.trim());
+    if (ended) {
+      return getRoom(roomId)!;
+    }
 
     const afterHuman = getRoom(roomId)!;
+
+    if (afterHuman.status !== "in_progress") {
+      return afterHuman;
+    }
 
     if (afterHuman.turnPhase === "bot") {
       await runBotPhaseLoop(roomId);

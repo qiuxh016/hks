@@ -4,6 +4,10 @@ import {
   Room,
   RoomSessionResponse,
   Scenario,
+  SelectRoleRequest,
+  PlayerAgentAssistRequest,
+  PlayerAgentAssistResponse,
+  StartAccusationRequest,
   TurnRequest,
   UpdateRoomSettingsRequest
 } from "../../shared/types";
@@ -56,6 +60,13 @@ export function updateRoomSettings(
   });
 }
 
+export function selectRole(roomId: string, payload: SelectRoleRequest) {
+  return request<Room>(`/api/rooms/${roomId}/role`, {
+    method: "PATCH",
+    body: JSON.stringify(payload)
+  });
+}
+
 export function toggleReady(roomId: string, playerId: string) {
   return request<Room>(`/api/rooms/${roomId}/ready`, {
     method: "PATCH",
@@ -71,6 +82,23 @@ export function startRoom(roomId: string) {
 
 export function submitTurn(roomId: string, payload: TurnRequest) {
   return request<Room>(`/api/rooms/${roomId}/turn`, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function startAccusationVote(roomId: string, payload: StartAccusationRequest) {
+  return request<{ ok: boolean }>(`/api/rooms/${roomId}/accusation`, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function requestPlayerAgentAssist(
+  roomId: string,
+  payload: PlayerAgentAssistRequest
+) {
+  return request<PlayerAgentAssistResponse>(`/api/rooms/${roomId}/player-agent`, {
     method: "POST",
     body: JSON.stringify(payload)
   });

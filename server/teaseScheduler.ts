@@ -1,11 +1,15 @@
 import { AI_HOST_TEASE_SPEAKER } from "../shared/types";
 import { generateTease } from "./dm";
+import { countPlayerActions, msSince, msSinceLastPlayerMessage } from "./memory";
 import { appendMessages, getRoom, listInProgressRooms, updateRoom } from "./store";
-import { countPlayerActions, msSince } from "./memory";
 
-const TICK_MS = 60_000;
-const TEASE_COOLDOWN_MS = 300_000;
-const IDLE_BEFORE_TEASE_MS = 180_000;
+const TICK_MS = 30_000;
+/** 最近有人发言（剧情行动或交流区）时，调侃间隔 */
+const TEASE_INTERVAL_ACTIVE_MS = 2 * 60 * 1000;
+/** 无人发言时的调侃间隔 */
+const TEASE_INTERVAL_IDLE_MS = 5 * 60 * 1000;
+/** 判定「有人发消息」：此时间窗内有行动或聊天 */
+const ACTIVE_MESSAGE_WINDOW_MS = 2 * 60 * 1000;
 
 const teasingRooms = new Set<string>();
 
@@ -15,7 +19,7 @@ export function startTeaseScheduler() {
   }, TICK_MS);
 
   console.log(
-    `AI主持人 调侃定时器已启动（每 ${TICK_MS / 1000}s 检查，冷却 ${TEASE_COOLDOWN_MS / 1000}s）`
+    `AI主持人 调侃定时器已启动（有人发言每 ${TEASE_INTERVAL_ACTIVE_MS / 60_000} 分钟，无人发言每 ${TEASE_INTERVAL_IDLE_MS / 60_000} 分钟）`
   );
 }
 
@@ -59,19 +63,24 @@ async function runTeaseTick() {
   }
 }
 
+function teaseIntervalForRoom(room: ReturnType<typeof listInProgressRooms>[number]) {
+  const recentlyActive = msSinceLastPlayerMessage(room) <= ACTIVE_MESSAGE_WINDOW_MS;
+  return recentlyActive ? TEASE_INTERVAL_ACTIVE_MS : TEASE_INTERVAL_IDLE_MS;
+}
+
 function shouldTeaseRoom(room: ReturnType<typeof listInProgressRooms>[number]) {
   const memory = room.worldState.memory;
 
-  if (countPlayerActions(room) < 1) {
+  const hasStoryPlay = countPlayerActions(room) >= 1;
+  const hasChat = Boolean(memory.lastChatAt);
+  if (!hasStoryPlay && !hasChat) {
     return false;
   }
 
-  if (msSince(memory.lastTeaseAt) < TEASE_COOLDOWN_MS) {
+  const interval = teaseIntervalForRoom(room);
+  if (msSince(memory.lastTeaseAt) < interval) {
     return false;
   }
 
-  const idleLongEnough = msSince(memory.lastActionAt) >= IDLE_BEFORE_TEASE_MS;
-  const everyFewRounds = room.worldState.round > 0 && room.worldState.round % 6 === 0;
-
-  return idleLongEnough || everyFewRounds;
+  return true;
 }

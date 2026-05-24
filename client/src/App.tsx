@@ -1,4 +1,5 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import QRCode from "react-qr-code";
 import {
   createRoom,
@@ -6,6 +7,8 @@ import {
   fetchRoom,
   fetchScenarios,
   joinRoom,
+  selectRole,
+  startAccusationVote,
   startRoom,
   submitTurn,
   toggleReady,
@@ -15,7 +18,6 @@ import {
   AI_HOST_SPEAKER,
   MAX_ROOM_PLAYERS,
   MIN_ROOM_PLAYERS,
-  Message,
   Room,
   RoomMode,
   Scenario,
@@ -23,30 +25,64 @@ import {
   getTurnPhaseLabel
 } from "../../shared/types";
 import { BgmPlayer } from "./components/BgmPlayer";
-import { TypewriterText } from "./components/TypewriterText";
-import { clearPlayerSession, loadPlayerSession, resolvePlayerId, savePlayerSession } from "./session";
-import { ChatMessage, useSocket, VoteState } from "./useSocket";
+import ChatComposer, { OutgoingChatPost } from "./components/ChatComposer";
+import ChatPostCard from "./components/ChatPostCard";
+import {
+  clearActiveGameplaySession,
+  clearGameplaySessionCache,
+  clearPlayerSession,
+  loadPlayerSession,
+  resolvePlayerId,
+  saveActiveGameplaySession,
+  savePlayerSession
+} from "./session";
+import {
+  AccusationResultPayload,
+  AccusationVoteState,
+  ChatMessage,
+  useSocket,
+  VoteState
+} from "./useSocket";
 import SceneRenderer from "./SceneRenderer";
 import VoiceChat from "./VoiceChat";
+import PlayerAgentAssistant from "./components/PlayerAgentAssistant";
 import VoiceInput from "./VoiceInput";
-
-const BOT_AVATARS = ["🤖", "🦾", "🎲", "⚙️"];
-
-function getSpeakerAvatar(message: Message, room: Room | null): string {
-  if (message.variant === "tease") return "😈";
-  if (message.type === "ai") return "🎭";
-  if (message.type === "player" && message.playerId && room) {
-    const player = room.players.find(p => p.id === message.playerId);
-    if (player?.kind === "bot") {
-      const botIndex = room.players.filter(p => p.kind === "bot").indexOf(player);
-      return BOT_AVATARS[botIndex] ?? "🤖";
-    }
-    return "👤";
-  }
-  return "👤";
-}
+import { TypewriterText } from "./components/TypewriterText";
+import GameOutcomePage from "./pages/GameOutcomePage";
+import {
+  gameEndMatchesCurrentRun,
+  resolveActiveBehaviorReviews,
+  resolveActiveGameEnd,
+  shouldNavigateToOutcomePage,
+  shouldNavigateToReviewsPage
+} from "./outcomeNavigation";
+import GameReviewsPage from "./pages/GameReviewsPage";
+import GameRevealPage from "./pages/GameRevealPage";
+import { resolveActiveMysteryReveal } from "./revealNavigation";
 
 function App() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const locationPathRef = useRef(location.pathname);
+  locationPathRef.current = location.pathname;
+
+  const goToOutcomePage = useCallback(() => {
+    if (locationPathRef.current !== "/outcome") {
+      navigate("/outcome", { replace: true });
+    }
+  }, [navigate]);
+
+  const goToReviewsPage = useCallback(() => {
+    if (locationPathRef.current !== "/reviews") {
+      navigate("/reviews", { replace: true });
+    }
+  }, [navigate]);
+
+  /** 用户已进入结案子页面时，不再强制跳回点评页 */
+  const isOnPostGameSubPage = useCallback(() => {
+    const path = locationPathRef.current;
+    return path === "/reveal" || path === "/outcome";
+  }, []);
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [room, setRoom] = useState<Room | null>(null);
   const [playerId, setPlayerId] = useState("");
@@ -62,10 +98,10 @@ function App() {
   const [aiMode, setAiMode] = useState<string>("checking");
   const [thinking, setThinking] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [revealedCount, setRevealedCount] = useState(0);
   const [myPlayerName, setMyPlayerName] = useState("");
   const messageListRef = useRef<HTMLDivElement>(null);
-  const prevRoundRef = useRef(0);
-  const prevLocationRef = useRef("");
+  const roomRef = useRef<Room | null>(null);
 
   // invite + QR
   const [inviteCopied, setInviteCopied] = useState(false);
@@ -81,22 +117,18 @@ function App() {
   // voting state
   const [vote, setVote] = useState<VoteState | null>(null);
   const [voteChoice, setVoteChoice] = useState("");
-  const [voteResult, setVoteResult] = useState<{ tally: Record<string, number>; winner: string | null } | null>(null);
+  const [voteResult, setVoteResult] = useState<{ tally: Record<string, number>; winner: string } | null>(null);
   const [voters, setVoters] = useState<string[]>([]);
+  const [accusationVote, setAccusationVote] = useState<AccusationVoteState | null>(null);
+  const [accusationChoice, setAccusationChoice] = useState("");
+  const [accusationVoters, setAccusationVoters] = useState<string[]>([]);
+  const [accusationResult, setAccusationResult] = useState<AccusationResultPayload | null>(null);
+  const [accusationLoading, setAccusationLoading] = useState(false);
 
   // chat
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [chatInput, setChatInput] = useState("");
+  const [chatPosts, setChatPosts] = useState<ChatMessage[]>([]);
   const [activeTab, setActiveTab] = useState<"story" | "chat">("story");
   const [unreadCount, setUnreadCount] = useState(0);
-  const [expandedPlayers, setExpandedPlayers] = useState<Set<string>>(new Set());
-  const [questsExpanded, setQuestsExpanded] = useState(true);
-  const [sidebarLeftOpen, setSidebarLeftOpen] = useState(true);
-  const [sidebarRightOpen, setSidebarRightOpen] = useState(true);
-  const [fastForwarded, setFastForwarded] = useState(false);
-  const [typewriterDone, setTypewriterDone] = useState(true);
-  const [revealedCount, setRevealedCount] = useState(0);
-  const revealedCountRef = useRef(0);
   const chatListRef = useRef<HTMLDivElement>(null);
   const chatTabActiveRef = useRef(false);
 
@@ -106,7 +138,7 @@ function App() {
     if (activeTab === "chat" && chatListRef.current) {
       chatListRef.current.scrollTop = chatListRef.current.scrollHeight;
     }
-  }, [chatMessages.length, activeTab]);
+  }, [chatPosts.length, activeTab]);
 
   // auto-select first interactive object
   useEffect(() => {
@@ -123,27 +155,33 @@ function App() {
     setFocusedSceneObjectId("");
   }, [room?.scenarioId]);
 
-  // reset round/location tracker when room changes
-  useEffect(() => {
-    if (room) {
-      prevRoundRef.current = room.worldState.round;
-      prevLocationRef.current = room.worldState.currentLocation;
-    }
-  }, [room?.id]);
+  function resetAccusationAndVoteState() {
+    setAccusationVote(null);
+    setAccusationChoice("");
+    setAccusationVoters([]);
+    setAccusationResult(null);
+    setAccusationLoading(false);
+    setVote(null);
+    setVoteChoice("");
+    setVoteResult(null);
+    setVoters([]);
+  }
 
-  // reset fast-forward when bot phase ends
-  useEffect(() => {
-    if (room?.turnPhase !== "bot") {
-      setFastForwarded(false);
-    }
-  }, [room?.turnPhase]);
+  roomRef.current = room;
 
-  // track typewriter: hide turn prompt until latest narration finishes typing
+  const prevGameInstanceIdRef = useRef<string | undefined>();
+
   useEffect(() => {
-    if (thinking || starting) {
-      setTypewriterDone(false);
+    if (
+      prevGameInstanceIdRef.current &&
+      room?.gameInstanceId &&
+      prevGameInstanceIdRef.current !== room.gameInstanceId
+    ) {
+      resetAccusationAndVoteState();
     }
-  }, [thinking, starting]);
+
+    prevGameInstanceIdRef.current = room?.gameInstanceId || undefined;
+  }, [room?.gameInstanceId]);
 
   // session restore (skip if arriving via invite link)
   useEffect(() => {
@@ -171,7 +209,16 @@ function App() {
 
     if (!room) {
       fetchRoom(session.roomId)
-        .then(setRoom)
+        .then((fetched) => {
+          if (fetched.status === "ended") {
+            clearPlayerSession();
+            clearActiveGameplaySession();
+            clearGameplaySessionCache();
+            return;
+          }
+
+          setRoom(fetched);
+        })
         .catch(() => undefined);
     }
   }, []);
@@ -181,12 +228,22 @@ function App() {
       return;
     }
 
+    if (room.status === "ended") {
+      clearPlayerSession();
+      clearActiveGameplaySession();
+      return;
+    }
+
     savePlayerSession({
       roomId: room.id,
       playerId,
       playerName: myPlayerName
     });
-  }, [room?.id, playerId, myPlayerName]);
+
+    if (room.status === "in_progress" && room.gameInstanceId) {
+      saveActiveGameplaySession(room.id, room.gameInstanceId);
+    }
+  }, [room?.id, room?.status, room?.gameInstanceId, playerId, myPlayerName]);
 
   // parse invite URL parameter
   useEffect(() => {
@@ -234,12 +291,34 @@ function App() {
 
     const timer = window.setInterval(() => {
       fetchRoom(room.id)
-        .then(setRoom)
+        .then((fetched) => {
+          setRoom(fetched);
+          if (fetched.status === "ended" && !isOnPostGameSubPage()) {
+            goToReviewsPage();
+          }
+        })
         .catch(() => undefined);
     }, 2000);
 
     return () => window.clearInterval(timer);
-  }, [room?.id, loading, thinking, starting]);
+  }, [room?.id, loading, thinking, starting, goToReviewsPage, isOnPostGameSubPage]);
+
+  // 点评页 / 谜底页：更频繁拉取房间状态
+  useEffect(() => {
+    if (!room?.id || (location.pathname !== "/reviews" && location.pathname !== "/reveal")) {
+      return;
+    }
+
+    const refresh = () => {
+      fetchRoom(room.id)
+        .then(setRoom)
+        .catch(() => undefined);
+    };
+
+    refresh();
+    const timer = window.setInterval(refresh, 1200);
+    return () => window.clearInterval(timer);
+  }, [room?.id, location.pathname]);
 
   // scroll to latest message
   useEffect(() => {
@@ -252,9 +331,20 @@ function App() {
   }, [room?.messages.length, revealedCount, thinking, starting]);
 
   // socket callbacks
-  const onRoomState = useCallback((next: Room) => {
-    setRoom(next);
-  }, []);
+  const onRoomState = useCallback(
+    (next: Room) => {
+      setRoom(next);
+      if (next.status === "ended") {
+        setAccusationVote(null);
+        setAccusationVoters([]);
+        setAccusationChoice("");
+        if (!isOnPostGameSubPage()) {
+          goToReviewsPage();
+        }
+      }
+    },
+    [goToReviewsPage, isOnPostGameSubPage]
+  );
 
   const onVoteStart = useCallback((v: VoteState) => {
     setVote(v);
@@ -267,13 +357,46 @@ function App() {
     setVoters((prev) => [...prev, info.voterName]);
   }, []);
 
-  const onVoteResult = useCallback((r: { tally: Record<string, number>; winner: string | null }) => {
+  const onVoteResult = useCallback((r: { tally: Record<string, number>; winner: string }) => {
     setVoteResult(r);
     setVote(null);
   }, []);
 
-  const onChatMessage = useCallback((msg: ChatMessage) => {
-    setChatMessages((prev) => [...prev, msg]);
+  const onAccusationStart = useCallback((payload: AccusationVoteState) => {
+    const current = roomRef.current;
+    if (!current?.gameInstanceId || payload.gameInstanceId !== current.gameInstanceId) {
+      return;
+    }
+
+    setAccusationVote(payload);
+    setAccusationChoice("");
+    setAccusationVoters([]);
+    setAccusationResult(null);
+    goToOutcomePage();
+  }, [goToOutcomePage]);
+
+  const onAccusationUpdate = useCallback((info: { voterName: string; voted: boolean }) => {
+    setAccusationVoters((prev) => [...prev, info.voterName]);
+  }, []);
+
+  const onAccusationResult = useCallback((result: AccusationResultPayload) => {
+    const current = roomRef.current;
+    if (!current?.gameInstanceId || result.gameInstanceId !== current.gameInstanceId) {
+      return;
+    }
+
+    setAccusationResult(result);
+    setAccusationVote(null);
+    goToOutcomePage();
+  }, [goToOutcomePage]);
+
+  const onChatPost = useCallback((post: ChatMessage) => {
+    setChatPosts((prev) => {
+      if (prev.some((item) => item.id === post.id)) {
+        return prev;
+      }
+      return [...prev, post];
+    });
     if (!chatTabActiveRef.current) {
       setUnreadCount((prev) => prev + 1);
     }
@@ -283,13 +406,16 @@ function App() {
     setError(msg);
   }, []);
 
-  const { submitVote, sendChatMessage, fastForward, socket } = useSocket({
+  const { submitVote, submitAccusation, sendChatPost, socket } = useSocket({
     roomId: room?.id ?? null,
     onRoomState,
     onVoteStart,
     onVoteUpdate,
     onVoteResult,
-    onChatMessage,
+    onAccusationStart,
+    onAccusationUpdate,
+    onAccusationResult,
+    onChatPost,
     onError
   });
 
@@ -311,60 +437,95 @@ function App() {
       currentTurnPlayer.id === activePlayerId
   );
   const humanCount = room?.players.filter((player) => player.kind === "human").length ?? 0;
-  const { storyMessages, systemMessages } = useMemo(() => {
-    if (!room?.messages) return { storyMessages: [] as Message[], systemMessages: [] as Message[] };
-    const story: Message[] = [];
-    const sys: Message[] = [];
-    for (const msg of room.messages) {
-      if (msg.type === "system") sys.push(msg);
-      else story.push(msg);
-    }
-    return { storyMessages: story, systemMessages: sys };
-  }, [room?.messages]);
-
-  // revealedCount: gate messages to appear one at a time with typewriter
-  const prevRoomIdRef = useRef<string | null>(null);
-  const prevStoryLenRef = useRef(0);
-
-  useEffect(() => {
-    const len = storyMessages.length;
-    const prevLen = prevStoryLenRef.current;
-    const roomChanged = room?.id !== prevRoomIdRef.current;
-    prevStoryLenRef.current = len;
-    if (room?.id) prevRoomIdRef.current = room.id;
-
-    if (len === 0) {
-      setRevealedCount(0);
-      revealedCountRef.current = 0;
-      return;
-    }
-
-    if (roomChanged || prevLen === 0 || fastForwarded) {
-      setRevealedCount(len);
-      revealedCountRef.current = len;
-      if (fastForwarded) setTypewriterDone(true);
-      return;
-    }
-
-    if (revealedCountRef.current >= prevLen) {
-      setTypewriterDone(false);
-    }
-  }, [storyMessages.length, room?.id, fastForwarded]);
-
-  useEffect(() => {
-    revealedCountRef.current = revealedCount;
-  }, [revealedCount]);
-
-  useEffect(() => {
-    if (revealedCount >= storyMessages.length && !thinking && !starting) {
-      setTypewriterDone(true);
-    }
-  }, [revealedCount, storyMessages.length, thinking, starting]);
-
   const amHost = room?.hostPlayerId === activePlayerId;
-  const allHumansReady = room
-    ? room.players.filter((p) => p.kind === "human").every((p) => p.ready)
+  const allHumansHaveRole = room
+    ? room.players.filter((p) => p.kind === "human").every((p) => p.roleSlotId)
     : false;
+  /** 所有真人已选角即可由房主开局（选角后自动视为已准备） */
+  const canHostStartGame = allHumansHaveRole;
+
+  function claimerForSlot(slotId: string) {
+    if (!room) {
+      return undefined;
+    }
+    const slot = room.roleSlots.find((item) => item.id === slotId);
+    if (!slot?.claimedByPlayerId) {
+      return undefined;
+    }
+    return room.players.find((player) => player.id === slot.claimedByPlayerId);
+  }
+
+  const lobbyBotCount = room?.players.filter((player) => player.kind === "bot").length ?? 0;
+  const rolesFilledByAi =
+    allHumansHaveRole && lobbyBotCount > 0 && room?.status === "lobby";
+
+  const accusationVoteActive =
+    Boolean(
+      accusationVote &&
+        room?.gameInstanceId &&
+        accusationVote.gameInstanceId === room.gameInstanceId
+    );
+
+  const accusationResultActive =
+    Boolean(
+      accusationResult &&
+        room?.gameInstanceId &&
+        accusationResult.gameInstanceId === room.gameInstanceId
+    );
+
+  const gameEndMatchesRun = room ? gameEndMatchesCurrentRun(room) : true;
+  const activeGameEnd = room ? resolveActiveGameEnd(room) : null;
+  const activeBehaviorReviews = room ? resolveActiveBehaviorReviews(room) : null;
+  const activeMysteryReveal = room ? resolveActiveMysteryReveal(room) : null;
+
+  const shouldOpenReviewsPage = shouldNavigateToReviewsPage(room);
+  const shouldOpenOutcomePage = shouldNavigateToOutcomePage(room, {
+    accusationVoteActive: Boolean(accusationVoteActive),
+    accusationResultActive: Boolean(accusationResultActive)
+  });
+
+  useEffect(() => {
+    if (isOnPostGameSubPage()) {
+      return;
+    }
+
+    if (shouldOpenReviewsPage) {
+      goToReviewsPage();
+      return;
+    }
+
+    if (shouldOpenOutcomePage) {
+      goToOutcomePage();
+    }
+  }, [
+    shouldOpenReviewsPage,
+    shouldOpenOutcomePage,
+    goToReviewsPage,
+    goToOutcomePage,
+    isOnPostGameSubPage
+  ]);
+
+  async function handleSelectRole(roleSlotId: string) {
+    if (!room || !activePlayerId) {
+      return;
+    }
+
+    const nextId = me?.roleSlotId === roleSlotId ? null : roleSlotId;
+    setLoading(true);
+    setError("");
+
+    try {
+      const updated = await selectRole(room.id, {
+        playerId: activePlayerId,
+        roleSlotId: nextId
+      });
+      setRoom(updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "选择角色失败");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   const inviteUrl = room
     ? `${networkBase}?room=${room.id}`
@@ -473,11 +634,20 @@ function App() {
 
   function handleExitGame() {
     clearPlayerSession();
+    clearActiveGameplaySession();
+    clearGameplaySessionCache();
+    resetAccusationAndVoteState();
     setRoom(null);
     setPlayerId("");
     setMyPlayerName("");
     setRoomCode("");
     setError("");
+    setFromInvite(false);
+
+    const url = new URL(window.location.href);
+    url.searchParams.delete("room");
+    window.history.replaceState({}, "", `${url.pathname}${url.search}`);
+    navigate("/", { replace: true });
   }
 
   async function handleToggleReady() {
@@ -551,6 +721,9 @@ function App() {
         content: nextAction.trim()
       });
       setRoom({ ...nextRoom });
+      if (nextRoom.status === "ended" && !isOnPostGameSubPage()) {
+        goToReviewsPage();
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "提交失败");
     } finally {
@@ -569,25 +742,27 @@ function App() {
     setAction("");
   }
 
-  function togglePlayerExpand(playerId: string) {
-    setExpandedPlayers((prev) => {
-      const next = new Set(prev);
-      if (next.has(playerId)) next.delete(playerId);
-      else next.add(playerId);
-      return next;
-    });
+  function handlePublishChat(post: OutgoingChatPost) {
+    if (!room) {
+      setError("请先创建或加入房间后再发帖");
+      return;
+    }
+    if (!me) {
+      setError("无法识别你的玩家身份，请重新加入房间");
+      return;
+    }
+    setError("");
+    sendChatPost(room.id, me.name, post);
   }
 
-  function handleChatSubmit(event: FormEvent) {
-    event.preventDefault();
-    if (!room || !chatInput.trim() || !me) return;
-    sendChatMessage(room.id, me.name, chatInput.trim());
-    setChatInput("");
-  }
-
-  function insertEmoji(emoji: string) {
-    setChatInput((prev) => prev + emoji);
-  }
+  const canChatPost = Boolean(room && me);
+  const chatComposerHint = !room
+    ? roomCode
+      ? "正在加载房间…"
+      : "请先在左侧创建或加入房间，才能发帖"
+    : !me
+      ? "无法识别玩家身份，请重新加入房间"
+      : "图片点「图片」；语音按住「语音」至少 1 秒再松开；文字点「发文字」";
 
   function handleVoteSubmit(event: FormEvent) {
     event.preventDefault();
@@ -595,36 +770,111 @@ function App() {
     submitVote(room.id, activePlayerId, voteChoice);
   }
 
+  async function handleStartAccusation() {
+    if (!room || !activePlayerId || me?.kind !== "human") {
+      return;
+    }
+
+    if (!window.confirm("发起「指认真凶」投票？全体真人投票后多数票直接结案（猜对=推理成功，猜错=推理错误）。")) {
+      return;
+    }
+
+    setAccusationLoading(true);
+    setError("");
+
+    try {
+      await startAccusationVote(room.id, { playerId: activePlayerId });
+      navigate("/outcome");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "发起指认真凶失败");
+    } finally {
+      setAccusationLoading(false);
+    }
+  }
+
+  function handleAccusationSubmit(event: FormEvent) {
+    event.preventDefault();
+    if (!room || !accusationChoice) {
+      return;
+    }
+
+    submitAccusation(room.id, activePlayerId, accusationChoice);
+  }
+
   const quickEmojis = ["😀","😂","🤣","😍","🤔","😎","👍","👎","🎉","❤️","🔥","💀","👀","🎲","🐉","⚔️","🛡️","🗡️","🏰","🌙","✨","💬"];
+
+  if (location.pathname === "/reviews") {
+    return (
+      <GameReviewsPage
+        room={room}
+        reviews={activeBehaviorReviews}
+        gameEnd={activeGameEnd}
+        activePlayerId={activePlayerId}
+        onExitGame={handleExitGame}
+      />
+    );
+  }
+
+  if (location.pathname === "/reveal") {
+    return (
+      <GameRevealPage
+        room={room}
+        reveal={activeMysteryReveal}
+        gameEnd={activeGameEnd}
+        onBack={() => navigate("/reviews")}
+      />
+    );
+  }
+
+  if (location.pathname === "/outcome") {
+    return (
+      <GameOutcomePage
+        room={room}
+        gameEnd={activeGameEnd}
+        gameEndPending={Boolean(room?.status === "ended" && !activeGameEnd)}
+        gameEndMatchesCurrentRun={gameEndMatchesRun}
+        accusationVote={accusationVote}
+        accusationVoteActive={Boolean(accusationVoteActive)}
+        accusationChoice={accusationChoice}
+        accusationVoters={accusationVoters}
+        accusationResult={accusationResult}
+        accusationResultActive={Boolean(accusationResultActive)}
+        accusationLoading={accusationLoading}
+        canVoteAccusation={me?.kind === "human"}
+        canLaunchAccusation={me?.kind === "human"}
+        aiReady={aiMode === "ai-ready"}
+        error={error}
+        onAccusationChoiceChange={setAccusationChoice}
+        onAccusationSubmit={handleAccusationSubmit}
+        onStartAccusation={handleStartAccusation}
+        onExitGame={handleExitGame}
+      />
+    );
+  }
 
   return (
     <main className="app-shell">
       <section className="hero-card">
+        <p className="eyebrow">Hackathon Frame</p>
         <h1>AI 地下城</h1>
+        <p className="hero-copy">
+          先把多人房间、聊天式冒险和 AI 主持人接起来，再慢慢把剧本、语音和实时联机做强。
+        </p>
         {aiMode === "no-api-key" && (
           <p className="error-text api-banner">
-            未检测到 DeepSeek API Key，请在 `.env` 中设置 DEEPSEEK_API_KEY。
+            未检测到 DeepSeek API Key。请在项目根目录创建 `.env` 并设置 `DEEPSEEK_API_KEY`，然后重启 `npm run dev`。
           </p>
         )}
+        {aiMode === "ai-ready" && (
+          <p className="api-ready">
+            每轮真人先依次输入指令，再由 DeepSeek 驱动的 AI 机器人依次行动。
+          </p>
+        )}
+        <BgmPlayer />
       </section>
 
-      <section
-        className="grid"
-        style={{
-          gridTemplateColumns: `${sidebarLeftOpen ? "300px" : "36px"} minmax(0, 1fr) ${sidebarRightOpen ? "340px" : "36px"}`
-        }}
-      >
-        <aside className={`panel controls${sidebarLeftOpen ? "" : " is-collapsed"}`}>
-          <button
-            type="button"
-            className="sidebar-toggle"
-            onClick={() => setSidebarLeftOpen(!sidebarLeftOpen)}
-            title={sidebarLeftOpen ? "收起侧栏" : "展开侧栏"}
-          >
-            {sidebarLeftOpen ? "◀" : "▶"}
-          </button>
-          {sidebarLeftOpen && (
-          <>
+      <section className="grid">
+        <aside className="panel controls">
           <h2>房间操作</h2>
 
           {!room && !fromInvite && (
@@ -696,7 +946,9 @@ function App() {
             </form>
           )}
 
-          {!room && (
+          {room && room.id === roomCode ? (
+            <p className="muted join-hint">你已在当前房间中，无需再次加入。可直接开始游戏。</p>
+          ) : (
             <form onSubmit={handleJoinRoom} className="stack join-form">
               {fromInvite && (
                 <p className="invite-hint" style={{ margin: 0, color: "var(--accent-2)", fontWeight: 700, fontSize: "0.9rem" }}>
@@ -722,20 +974,154 @@ function App() {
           {room && (
             <div className="status-card">
               <p>房间号：{room.id}</p>
+              <p>状态：{room.status === "lobby" ? "等待中" : room.status === "in_progress" ? "进行中" : "已结束"}</p>
               <p>
-                {humanCount} 真人 / {room.maxPlayers} 人局
+                人数：{humanCount} 真人 / {room.maxPlayers} 人局
                 {room.players.filter((player) => player.kind === "bot").length > 0 &&
-                  `（${room.players.filter((player) => player.kind === "bot").length} AI）`}
+                  `（${room.players.filter((player) => player.kind === "bot").length} AI 机器人）`}
               </p>
-              <p>{scenarios.find((item) => item.id === room.scenarioId)?.title ?? room.scenarioId}</p>
+              <p>场景：{scenarios.find((item) => item.id === room.scenarioId)?.title ?? room.scenarioId}</p>
               {room.status === "in_progress" && (
                 <>
                   <p className="turn-indicator">
-                    {getTurnPhaseLabel(room.turnPhase)} · {currentTurnPlayer?.name ?? "—"}
+                    本轮阶段：{getTurnPhaseLabel(room.turnPhase)}
                     {room.isProcessingTurn ? " · 处理中…" : ""}
+                  </p>
+                  <p className="turn-indicator">
+                    当前行动：{currentTurnPlayer?.name ?? "—"}
                   </p>
                 </>
               )}
+              <p>当前地点：{room.worldState.currentLocation}</p>
+              <p>紧张度：{room.worldState.tension} / 10</p>
+              <p>回合数：{room.worldState.round}</p>
+              {(room.status === "in_progress" || room.status === "ended") &&
+                (room.worldState.objectives?.length ?? 0) > 0 && (
+                <div className="quest-list">
+                  {room.worldState.objectives.some((item) => item.scope === "scenario") && (
+                    <>
+                      <p className="quest-title">本剧必做（通关条件）</p>
+                      <ul>
+                        {room.worldState.objectives
+                          .filter((item) => item.scope === "scenario")
+                          .map((item) => (
+                            <li key={item.id} className={item.status === "completed" ? "objective-done" : ""}>
+                              {item.status === "completed" ? "✅ " : "⬜ "}
+                              {item.text}
+                              {item.evidence ? ` — ${item.evidence}` : ""}
+                            </li>
+                          ))}
+                      </ul>
+                    </>
+                  )}
+                  {room.worldState.objectives.some((item) => item.scope === "session") && (
+                    <>
+                      <p className="quest-title">本局必做</p>
+                      <ul>
+                        {room.worldState.objectives
+                          .filter((item) => item.scope === "session")
+                          .map((item) => (
+                            <li key={item.id} className={item.status === "completed" ? "objective-done" : ""}>
+                              {item.status === "completed" ? "✅ " : "⬜ "}
+                              {item.text}
+                              {item.evidence ? ` — ${item.evidence}` : ""}
+                            </li>
+                          ))}
+                      </ul>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {room.status === "in_progress" && room.worldState.missionBrief?.naturalEndAction && (
+                <div className="natural-end-hint">
+                  <p className="quest-title">自然结案</p>
+                  <p className="muted">{room.worldState.missionBrief.naturalEndAction}</p>
+                  {room.worldState.missionBrief.suggestedRounds && (
+                    <p className="muted">建议回合：{room.worldState.missionBrief.suggestedRounds}</p>
+                  )}
+                </div>
+              )}
+
+              {room.status === "ended" && (
+                <div className="outcome-sidebar-prompt">
+                  <p className="quest-title">本局已结束</p>
+                  <Link to="/reviews" className="outcome-sidebar-link">
+                    查看全员行为点评 →
+                  </Link>
+                  <Link to="/reveal" className="outcome-sidebar-link" style={{ marginTop: 8 }}>
+                    查看故事谜底 →
+                  </Link>
+                </div>
+              )}
+
+              {room.status === "in_progress" && me?.kind === "human" && (
+                <div className="outcome-sidebar-prompt">
+                  <Link to="/outcome" className="outcome-sidebar-link">
+                    ⚖️ 指认真凶 / 投票结案 →
+                  </Link>
+                  <p className="muted accusation-launch-hint">
+                    在独立结案页发起投票或参与指认，不影响本页对局操作。
+                  </p>
+                </div>
+              )}
+
+              {room.status === "lobby" && room.roleSlots.length > 0 && (
+                <div className="role-picker">
+                  <p className="quest-title">选择角色（{room.maxPlayers} 人局）</p>
+                    <p className="muted role-picker-hint">
+                    共 {room.roleSlots.length} 个角色：真人先选，当<strong>所有真人</strong>都选好后，剩余角色会由 AI 补位，房主即可开始游戏。
+                  </p>
+                  {rolesFilledByAi && (
+                    <p className="lobby-ai-banner">
+                      🤖 已有 {lobbyBotCount} 个角色由 AI 补位。房主现在可以点「开始游戏」。
+                    </p>
+                  )}
+                  {!allHumansHaveRole && humanCount > 0 && (
+                    <p className="muted" style={{ marginBottom: 10 }}>
+                      等待所有真人选角（{room.players.filter((p) => p.kind === "human" && p.roleSlotId).length}/
+                      {humanCount}）
+                    </p>
+                  )}
+                  <div className="role-picker-grid">
+                    {room.roleSlots.map((slot) => {
+                      const claimer = claimerForSlot(slot.id);
+                      const isMine = me?.roleSlotId === slot.id;
+                      const isBot = claimer?.kind === "bot";
+                      const isOtherHuman = claimer?.kind === "human" && !isMine;
+                      const isDisabled = loading || isOtherHuman || isBot;
+
+                      return (
+                        <button
+                          key={slot.id}
+                          type="button"
+                          className={`role-slot-card ${isMine ? "is-mine" : ""} ${
+                            isOtherHuman || isBot ? "is-taken" : ""
+                          } ${isBot ? "is-bot" : ""}`}
+                          disabled={isDisabled}
+                          onClick={() => void handleSelectRole(slot.id)}
+                        >
+                          <p className="role-slot-name">{slot.role}</p>
+                          <p className="role-slot-backstory">{slot.backstory}</p>
+                          {isMine && (
+                            <p className="role-slot-secret">隐藏目标：{slot.secretGoal}</p>
+                          )}
+                          <p className="role-slot-status">
+                            {isMine
+                              ? "已选择 · 再点取消"
+                              : isBot
+                                ? `🤖 ${claimer.name} 扮演`
+                                : isOtherHuman
+                                  ? `已被 ${claimer.name} 选择`
+                                  : "点击选择此角色"}
+                          </p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               {room.status === "lobby" && room.mode === "multi" && (
                 <>
                   <label style={{ marginTop: 14, display: "block" }}>
@@ -756,31 +1142,47 @@ function App() {
                     </select>
                   </label>
 
-                  {amHost && !allHumansReady && (
+                  {amHost && !allHumansHaveRole && (
                     <p className="muted" style={{ marginTop: 8, color: "#f0a040" }}>
-                      等待所有玩家准备…
+                      请先选择你的角色…
+                    </p>
+                  )}
+                  {amHost && allHumansHaveRole && rolesFilledByAi && (
+                    <p className="muted" style={{ marginTop: 8, color: "#6a9a6a" }}>
+                      所有真人已选角，剩余角色由 AI 补位，可以开始游戏。
+                    </p>
+                  )}
+                  {amHost && !allHumansHaveRole && (
+                    <p className="muted" style={{ marginTop: 8, color: "#f0a040" }}>
+                      等待所有真人选角（每人点选上方角色卡）…
                     </p>
                   )}
                   {amHost && (
                     <button
                       onClick={handleStart}
-                      disabled={loading || starting || aiMode !== "ai-ready" || !allHumansReady}
+                      disabled={
+                        loading ||
+                        starting ||
+                        aiMode !== "ai-ready" ||
+                        !canHostStartGame
+                      }
                     >
-                      {starting ? "AI 撰写开场…" : allHumansReady ? "开始游戏" : "等待玩家准备"}
+                      {starting
+                        ? "AI 撰写开场…"
+                        : canHostStartGame
+                          ? "开始游戏"
+                          : "等待全员选角"}
                     </button>
                   )}
-                  {!amHost && (
-                    <button
-                      onClick={() => void handleToggleReady()}
-                      disabled={loading}
-                      style={{
-                        background: me?.ready
-                          ? "linear-gradient(120deg, #3a5a3a, #2a4a2a)"
-                          : "linear-gradient(120deg, #4a7a4a, #3a6a3a)"
-                      }}
-                    >
-                      {me?.ready ? "已准备 ✓" : "准备"}
-                    </button>
+                  {!amHost && !me?.roleSlotId && (
+                    <p className="muted" style={{ marginTop: 8, color: "#f0a040" }}>
+                      请先在上方选择角色
+                    </p>
+                  )}
+                  {!amHost && me?.roleSlotId && (
+                    <p className="muted" style={{ marginTop: 8, color: "#6a9a6a" }}>
+                      {me.ready ? "已选角并就绪，等待房主开始游戏" : "已选角，等待房主开始"}
+                    </p>
                   )}
                 </>
               )}
@@ -831,31 +1233,6 @@ function App() {
               >
                 退出游戏
               </button>
-            </div>
-          )}
-
-          {room?.status === "in_progress" && room.worldState.quests.length > 0 && (
-            <div className={`quest-tracker${questsExpanded ? " is-expanded" : ""}`}>
-              <button
-                type="button"
-                className="quest-toggle"
-                onClick={() => setQuestsExpanded(!questsExpanded)}
-              >
-                <span className="quest-toggle-icon">📜</span>
-                <span>任务目标</span>
-                <span className="quest-count">{room.worldState.quests.length}</span>
-                <span className="quest-chevron">{questsExpanded ? "▲" : "▼"}</span>
-              </button>
-              {questsExpanded && (
-                <div className="quest-cards">
-                  {room.worldState.quests.map((quest, i) => (
-                    <div key={i} className="quest-card">
-                      <span className="quest-num">{i + 1}</span>
-                      <span className="quest-text">{quest}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
             </div>
           )}
 
@@ -910,17 +1287,19 @@ function App() {
                   {opt === voteResult.winner ? "  ← 焦点" : ""}
                 </p>
               ))}
-              {!voteResult.winner && (
-                <p style={{ marginTop: 8, color: "var(--muted)", fontSize: "0.85rem" }}>
-                  未形成明确焦点，故事继续推进。
-                </p>
-              )}
+            </div>
+          )}
+
+          {accusationVoteActive && accusationVote && room && (
+            <div className="outcome-sidebar-prompt">
+              <p className="quest-title">指认投票进行中</p>
+              <Link to="/outcome" className="outcome-sidebar-link">
+                前往结案页投票 →
+              </Link>
             </div>
           )}
 
           {error && !room && <p className="error-text">{error}</p>}
-          </>
-          )}
         </aside>
 
         <section className="panel story-panel">
@@ -963,355 +1342,203 @@ function App() {
               )}
 
               <div className="story-scroll-area" ref={messageListRef}>
-                <div className={`message-list${(room?.worldState.tension ?? 0) <= 4 ? '' : (room?.worldState.tension ?? 0) <= 7 ? ' tension-mid' : ' tension-high'}`}>
-                {(() => {
-                  const items: React.ReactNode[] = [];
-                  storyMessages.forEach((message, idx) => {
-                    if (idx > revealedCount) return;
-                    const isRevealing = idx === revealedCount;
-
-                    // round separator
-                    if (room && room.worldState.round > 0 && room.worldState.round !== prevRoundRef.current) {
-                      items.push(
-                        <div key={`round-sep-${room.worldState.round}`} className="round-separator">
-                          <span className="round-separator-line" />
-                          <span className="round-separator-label">第 {room.worldState.round} 轮</span>
-                          <span className="round-separator-line" />
-                        </div>
-                      );
-                      prevRoundRef.current = room.worldState.round;
-                    }
-                    // location transition
-                    if (room && room.worldState.currentLocation && room.worldState.currentLocation !== prevLocationRef.current && prevLocationRef.current !== "") {
-                      items.push(
-                        <div key={`loc-sep-${idx}`} className="location-separator">
-                          <span className="location-separator-icon">📍</span>
-                          <span>{room.worldState.currentLocation}</span>
-                        </div>
-                      );
-                    }
-                    if (room) {
-                      prevLocationRef.current = room.worldState.currentLocation;
-                    }
-
-                    const isBot = message.type === "player" && message.playerId
-                      && room?.players.find(p => p.id === message.playerId)?.kind === "bot";
-                    const variantClass = [
-                      message.variant === "tease" ? "chat-msg-tease" : "",
-                      message.variant === "brief" ? "chat-msg-brief" : "",
-                      isBot ? "chat-msg-bot" : ""
-                    ].filter(Boolean).join(" ");
-
-                    items.push(
-                      <article
-                        key={message.id}
-                        className={`chat-msg chat-msg-${message.type} ${variantClass}${isRevealing ? " chat-msg-revealing" : ""}`}
-                      >
-                        <p className="chat-msg-speaker">
-                          <span className="speaker-avatar">{getSpeakerAvatar(message, room)}</span>
-                          {message.speaker}
-                          {message.variant === "tease" ? " · 调侃" : ""}
-                        </p>
-                        <div className="chat-msg-bubble">
-                          {isRevealing ? (
-                            <TypewriterText
-                              text={message.content}
-                              onComplete={() => {
-                                const next = revealedCountRef.current + 1;
-                                setRevealedCount(next);
-                                revealedCountRef.current = next;
-                              }}
-                            />
-                          ) : (
-                            <p className="chat-msg-text">{message.content}</p>
-                          )}
-                        </div>
-                      </article>
-                    );
-                  });
-                  return items;
-                })()}
-
-                {(thinking || starting) && revealedCount >= storyMessages.length && (
-                  <article className="chat-msg chat-msg-ai chat-msg-pending">
-                    <p className="chat-msg-speaker">{AI_HOST_SPEAKER}</p>
-                    <div className="chat-msg-bubble">
-                      <p className="chat-msg-text">
-                        {starting ? "正在撰写开场剧情，请稍候…" : "正在根据你的行动推演剧情，请稍候…"}
-                        <span className="thinking-dots">
-                          <span>.</span><span>.</span><span>.</span>
-                        </span>
+                <div className="message-list">
+                  {room?.messages.map((message) => (
+                    <article
+                      key={message.id}
+                      className={`message message-${message.type} ${
+                        message.variant === "tease"
+                          ? "message-tease"
+                          : message.variant === "brief"
+                            ? "message-brief"
+                            : message.variant === "ending"
+                              ? "message-ending"
+                              : ""
+                      }`}
+                    >
+                      <p className="message-speaker">{message.speaker}</p>
+                      <p>
+                        <TypewriterText
+                          text={message.content}
+                          onComplete={() => setRevealedCount((c) => c + 1)}
+                        />
                       </p>
-                    </div>
-                  </article>
-                )}
+                    </article>
+                  ))}
 
-                {!room && (
-                  <div className="empty-state">
-                    <p>先创建或加入一个房间。</p>
-                    <p>这版重点是把多人剧本流程跑通，不先卷复杂战斗系统。</p>
-                  </div>
-                )}
+                  {(thinking || starting) && (
+                    <article className="message message-ai message-pending">
+                      <p className="message-speaker">{AI_HOST_SPEAKER}</p>
+                      <p>{starting ? "正在撰写开场剧情，请稍候…" : "正在根据你的行动推演剧情，请稍候…"}</p>
+                    </article>
+                  )}
+
+                  {!room && (
+                    <div className="empty-state">
+                      <p>先创建或加入一个房间。</p>
+                      <p>这版重点是把多人剧本流程跑通，不先卷复杂战斗系统。</p>
+                    </div>
+                  )}
+                </div>
               </div>
 
               {error && activeTab === "story" && <p className="error-text story-error">{error}</p>}
 
-              {room && room.turnPhase === "bot" && room.status === "in_progress" && (
-                <div className="fast-forward-bar">
-                  <span className="fast-forward-hint">
-                    {fastForwarded
-                      ? "已快进，正在生成剩余 AI 行动…"
-                      : `AI 机器人依次行动中，${room.players.filter(p => p.kind === "bot").length} 位机器人正在发挥…`}
-                  </span>
-                  {!fastForwarded && (
-                    <button
-                      type="button"
-                      className="fast-forward-btn"
-                      onClick={() => {
-                        setFastForwarded(true);
-                        fastForward(room.id);
-                        setRevealedCount(storyMessages.length);
-                        revealedCountRef.current = storyMessages.length;
-                        setTypewriterDone(true);
-                      }}
-                    >
-                      快进全部
-                    </button>
-                  )}
-                </div>
-              )}
-              </div>
+              <div className="action-bar-wrap">
+                <form onSubmit={handleSubmitTurn} className="action-bar">
+                  <input
+                    placeholder={
+                      isMyTurn
+                        ? "输入你的行动，例如：我偷走地图 / 我观察谁最紧张"
+                        : room?.isProcessingTurn
+                          ? "AI 机器人或主持人处理中…"
+                          : `等待 ${currentTurnPlayer?.name ?? "其他玩家"} 行动`
+                    }
+                    value={action}
+                    onChange={(event) => setAction(event.target.value)}
+                    disabled={room?.status !== "in_progress" || !isMyTurn || room.isProcessingTurn}
+                  />
+                  <VoiceInput
+                    onResult={(text) => {
+                      voiceBaseRef.current = "";
+                      setAction((prev) => (prev ? `${prev} ${text}` : text));
+                    }}
+                    onInterim={(text) => {
+                      setAction((prev) => {
+                        if (!voiceBaseRef.current) voiceBaseRef.current = prev;
+                        const base = voiceBaseRef.current;
+                        return base ? `${base} ${text}` : text;
+                      });
+                    }}
+                    disabled={room?.status !== "in_progress" || !isMyTurn || room.isProcessingTurn}
+                  />
+                  <button
+                    type="submit"
+                    disabled={
+                      loading ||
+                      thinking ||
+                      starting ||
+                      room?.status !== "in_progress" ||
+                      !isMyTurn ||
+                      room?.isProcessingTurn ||
+                      aiMode !== "ai-ready"
+                    }
+                  >
+                    {thinking ? "AI 回复中…" : isMyTurn ? "执行" : "等待回合"}
+                  </button>
+                </form>
 
-              <form onSubmit={handleSubmitTurn} className={`action-bar${isMyTurn && !thinking && typewriterDone ? " action-bar-my-turn" : ""}`}>
-                {isMyTurn && !thinking && typewriterDone && (
-                  <p className="turn-prompt">轮到你了，输入你的行动</p>
+                {room?.status === "in_progress" && me?.kind === "human" && (
+                  <PlayerAgentAssistant
+                    room={room}
+                    playerId={activePlayerId}
+                    me={me}
+                    draftAction={action}
+                    onApplySuggestion={(text) => setAction(text)}
+                    disabled={aiMode !== "ai-ready" || loading || thinking}
+                  />
                 )}
-                <input
-                  placeholder={
-                    isMyTurn
-                      ? "例如：我偷走地图 / 我观察谁最紧张 / 我悄悄跟上那个黑影…"
-                      : room?.isProcessingTurn
-                        ? "AI 机器人或主持人处理中…"
-                        : `等待 ${currentTurnPlayer?.name ?? "其他玩家"} 行动`
-                  }
-                  value={action}
-                  onChange={(event) => setAction(event.target.value)}
-                  disabled={room?.status !== "in_progress" || !isMyTurn || room.isProcessingTurn}
-                  className={isMyTurn && !thinking && typewriterDone ? "input-my-turn" : ""}
-                />
-                <VoiceInput
-                  onResult={(text) => {
-                    voiceBaseRef.current = "";
-                    setAction((prev) => prev ? `${prev} ${text}` : text);
-                  }}
-                  onInterim={(text) => {
-                    setAction((prev) => {
-                      if (!voiceBaseRef.current) voiceBaseRef.current = prev;
-                      const base = voiceBaseRef.current;
-                      return base ? `${base} ${text}` : text;
-                    });
-                  }}
-                  disabled={room?.status !== "in_progress" || !isMyTurn || room.isProcessingTurn}
-                />
-                <button
-                  type="submit"
-                  disabled={
-                    loading ||
-                    thinking ||
-                    starting ||
-                    room?.status !== "in_progress" ||
-                    !isMyTurn ||
-                    room?.isProcessingTurn ||
-                    aiMode !== "ai-ready"
-                  }
-                >
-                  {thinking ? "AI 回复中…" : isMyTurn ? "执行" : "等待回合"}
-                </button>
-              </form>
+              </div>
             </>
           )}
 
           {activeTab === "chat" && (
             <>
+              {error && <p className="error-text story-error">{error}</p>}
               <div className="message-list chat-list" ref={chatListRef}>
-                {chatMessages.length === 0 && (
+                {chatPosts.length === 0 && (
                   <div className="empty-state" style={{ minHeight: 120 }}>
-                    <p>还没有聊天消息。</p>
-                    <p>在这里和其他玩家自由交流、讨论策略！</p>
+                    <p>还没有帖子。</p>
+                    <p>在这里发帖交流：支持文字、图片和语音。</p>
                   </div>
                 )}
-                {chatMessages.map((msg) => (
-                  <article key={msg.id} className={`chat-bubble ${msg.playerName === me?.name ? "is-self" : ""}`}>
-                    <p className="chat-sender">{msg.playerName}</p>
-                    <p className="chat-text">{msg.content}</p>
-                  </article>
+                {chatPosts.map((post) => (
+                  <ChatPostCard key={post.id} post={post} isSelf={post.playerName === me?.name} />
                 ))}
               </div>
 
-              <div className="emoji-bar">
-                {quickEmojis.map((emoji) => (
-                  <button
-                    key={emoji}
-                    type="button"
-                    className="emoji-btn"
-                    onClick={() => insertEmoji(emoji)}
-                  >
-                    {emoji}
-                  </button>
-                ))}
-              </div>
-
-              <form onSubmit={handleChatSubmit} className="action-bar chat-action-bar">
-                <input
-                  placeholder="输入聊天消息..."
-                  value={chatInput}
-                  onChange={(event) => setChatInput(event.target.value)}
-                  disabled={!room}
-                  className="chat-input"
-                />
-                <button type="submit" disabled={!room || !chatInput.trim()}>
-                  发送
-                </button>
-              </form>
+              <ChatComposer
+                canPost={canChatPost}
+                hint={chatComposerHint}
+                quickEmojis={quickEmojis}
+                onPublish={handlePublishChat}
+                onError={setError}
+              />
             </>
           )}
         </section>
 
-        <aside className={`panel roster-panel${sidebarRightOpen ? "" : " is-collapsed"}`}>
-          <button
-            type="button"
-            className="sidebar-toggle"
-            onClick={() => setSidebarRightOpen(!sidebarRightOpen)}
-            title={sidebarRightOpen ? "收起侧栏" : "展开侧栏"}
-          >
-            {sidebarRightOpen ? "▶" : "◀"}
-          </button>
-          {sidebarRightOpen && (
-          <>
+        <aside className="panel roster-panel">
           <h2>玩家与身份</h2>
 
-          {room && room.status === "in_progress" && room.worldState.memory?.storySummary && (() => {
-            const summary = room.worldState.memory.storySummary;
-            const lines = summary.split("\n").filter(Boolean);
-            const parts: { label: string; icon: string; text: string }[] = [];
-            for (const line of lines) {
-              const match = line.match(/^(.+?)[：:]\s*(.+)$/);
-              if (match) {
-                const rawLabel = match[1].trim();
-                if (rawLabel.includes("目标")) continue;
-                const icon =
-                  rawLabel.includes("走向") ? "🧭" :
-                  rawLabel.includes("真相") ? "💎" : "📌";
-                parts.push({ label: rawLabel, icon, text: match[2].trim() });
-              } else {
-                parts.push({ label: "", icon: "📌", text: line.trim() });
-              }
-            }
-            return (
-              <div className="story-direction-card">
-                <p className="story-direction-header">📜 故事走向</p>
-                <div className="story-direction-list">
-                  {parts.map((p, i) => (
-                    <div key={i} className="story-direction-item">
-                      <span className="story-direction-icon">{p.icon}</span>
-                      <div className="story-direction-body">
-                        {p.label && <span className="story-direction-label">{p.label}</span>}
-                        <span className="story-direction-text">{p.text}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
-          })()}
-
-          {room && room.status === "in_progress" && (
-            <div className="atmo-card">
-              <p className="atmo-title">{room.worldState.sceneTitle || room.worldState.currentLocation}</p>
-              <p className="atmo-location">{room.worldState.currentLocation}</p>
-
-              <div className="atmo-tags">
-                {room.scenarioId === "midnight-train" && (<span className="atmo-tag">列车</span>)}
-                {room.scenarioId === "office-dungeon" && (<span className="atmo-tag">地下城</span>)}
-                {room.scenarioId === "noble-banquet" && (<span className="atmo-tag">宫廷</span>)}
-                {room.worldState.tension <= 3 && (<span className="atmo-tag is-mood">平静</span>)}
-                {room.worldState.tension > 3 && room.worldState.tension <= 6 && (<span className="atmo-tag is-mood">紧张</span>)}
-                {room.worldState.tension > 6 && (<span className="atmo-tag is-danger">危急</span>)}
-                {room.worldState.round > 0 && (<span className="atmo-tag">第{room.worldState.round}轮</span>)}
-              </div>
-
-              <div className="atmo-section">
-                <p className="atmo-label">紧张度</p>
-                <div className="atmo-tension">
-                  <div className="atmo-tension-bar">
-                    <div
-                      className="atmo-tension-fill"
-                      style={{ width: `${(room.worldState.tension / 10) * 100}%` }}
-                    />
-                  </div>
-                  <span className="atmo-tension-num">{room.worldState.tension}/10</span>
-                </div>
-              </div>
-
-            </div>
-          )}
-
-          <div className="sidebar-bgm">
-            <BgmPlayer />
-          </div>
-
-          {systemMessages.length > 0 && (
-            <div className="syslog-card">
-              <p className="eyebrow">系统日志</p>
-              <div className="syslog-list">
-                {systemMessages.slice(-6).reverse().map((msg) => (
-                  <p key={msg.id} className="syslog-item">{msg.content}</p>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {room?.worldState.clues && room.worldState.clues.length > 0 && (
+          {(room?.worldState.investigationClues?.length ?? room?.worldState.clues?.length ?? 0) >
+            0 && (
             <div className="clue-card">
-              <p className="eyebrow">Clues</p>
-              {room.worldState.clues.map((clue) => (
-                <p key={clue}>{clue}</p>
-              ))}
+              <p className="eyebrow">推理线索</p>
+              <p className="muted clue-hint">线索可串联推理，请对照任务目标思考关联。</p>
+              <ul className="clue-list">
+                {(room?.worldState.investigationClues?.length
+                  ? room.worldState.investigationClues
+                  : (room?.worldState.clues ?? []).map((text, index) => ({
+                      id: `legacy-${index}`,
+                      text,
+                      round: 0,
+                      source: "场景",
+                      relatesTo: "core-truth"
+                    }))
+                ).map((clue) => (
+                  <li key={clue.id}>
+                    <span className="clue-text">{clue.text}</span>
+                    <span className="clue-meta">
+                      R{clue.round} · {clue.relatesTo === "core-truth" ? "核心真相" : clue.relatesTo}
+                    </span>
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
 
-          {room?.players.map((player) => {
-            const isExpanded = expandedPlayers.has(player.id);
-            return (
-              <article
-                key={player.id}
-                className={`player-card ${player.id === activePlayerId ? "is-me" : ""} ${
-                  player.kind === "bot" ? "is-bot" : ""
-                } ${currentTurnPlayer?.id === player.id ? "is-active-turn" : ""} ${
-                  isExpanded ? "is-expanded" : ""
-                }`}
-              >
-                <p className="player-name" onClick={() => togglePlayerExpand(player.id)}>
-                  <span className="player-expand-icon">{isExpanded ? "▼" : "▶"}</span>
-                  {player.name}
-                  {player.isHost ? " · 房主" : ""}
-                  {player.kind === "bot" ? " · AI" : ""}
-                  {currentTurnPlayer?.id === player.id ? " · 行动中" : ""}
-                </p>
-                <p className="player-role">{player.roleCard?.role ?? "等待分配身份"}</p>
-                {isExpanded && (
-                  <div className="player-detail">
-                    <p>{player.roleCard?.personality ?? "待开始"}</p>
-                    <p>{player.roleCard?.backstory ?? "开始游戏后可见背景。"}</p>
-                    <p>{player.roleCard?.secretGoal ?? "开始游戏后可见隐藏目标。"}</p>
-                  </div>
-                )}
-              </article>
-            );
-          })}
+          {room?.players.map((player) => (
+            <article
+              key={player.id}
+              className={`player-card ${player.id === activePlayerId ? "is-me" : ""} ${
+                player.kind === "bot" ? "is-bot" : ""
+              } ${currentTurnPlayer?.id === player.id ? "is-active-turn" : ""}`}
+            >
+              <p className="player-name">
+                {player.name}
+                {player.isHost ? " · 房主" : ""}
+                {player.kind === "bot" ? " · AI" : ""}
+                {currentTurnPlayer?.id === player.id ? " · 行动中" : ""}
+              </p>
+              <p>
+                {player.roleCard?.role ??
+                  (player.roleSlotId
+                    ? room.roleSlots.find((slot) => slot.id === player.roleSlotId)?.role
+                    : "未选角")}
+              </p>
+              <p>{player.roleCard?.personality ?? (player.roleSlotId ? "已选角，待开局" : "待选角")}</p>
+              <p>
+                {player.roleCard?.backstory ??
+                  room.roleSlots.find((slot) => slot.id === player.roleSlotId)?.backstory ??
+                  "大厅选角后可见背景。"}
+              </p>
+              <p>
+                {player.id === activePlayerId && player.roleSlotId
+                  ? room.roleSlots.find((slot) => slot.id === player.roleSlotId)?.secretGoal
+                  : player.roleCard?.secretGoal ?? "开局后可见隐藏目标。"}
+              </p>
+            </article>
+          ))}
 
           {!room && <p className="muted">玩家加入后会显示在这里。</p>}
-          </>
+
+          {me && (
+            <div className="me-card">
+              <p className="eyebrow">Your POV</p>
+              <h3>{me.name}</h3>
+              <p>{me.roleCard?.role ?? "还未获得角色卡"}</p>
+            </div>
           )}
         </aside>
       </section>
